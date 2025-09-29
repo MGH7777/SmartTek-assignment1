@@ -9,6 +9,11 @@ dependencies:
   - pyarrow>=16.0
   - scikit-learn
   - numpy
+  - pillow
+  - pydicom
   - pip
   - pip:
       - PySide6>=6.5
+      - pylibjpeg
+      - pylibjpeg-libjpeg
+      - pylibjpeg-openjpeg
