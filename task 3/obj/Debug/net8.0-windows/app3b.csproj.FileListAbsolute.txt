@@ -1,0 +1,15 @@
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\bin\Debug\net8.0-windows\app3b.exe
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\bin\Debug\net8.0-windows\app3b.deps.json
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\bin\Debug\net8.0-windows\app3b.runtimeconfig.json
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\bin\Debug\net8.0-windows\app3b.dll
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\bin\Debug\net8.0-windows\app3b.pdb
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\obj\Debug\net8.0-windows\app3b.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\obj\Debug\net8.0-windows\app3b.AssemblyInfoInputs.cache
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\obj\Debug\net8.0-windows\app3b.AssemblyInfo.cs
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\obj\Debug\net8.0-windows\app3b.csproj.CoreCompileInputs.cache
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\obj\Debug\net8.0-windows\app3b.sourcelink.json
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\obj\Debug\net8.0-windows\app3b.dll
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\obj\Debug\net8.0-windows\refint\app3b.dll
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\obj\Debug\net8.0-windows\app3b.pdb
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\obj\Debug\net8.0-windows\app3b.genruntimeconfig.cache
+C:\Users\m_kra\Desktop\Projects\SmartTek-assignment1\task 3\obj\Debug\net8.0-windows\ref\app3b.dll
