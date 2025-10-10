@@ -1,6 +1,3 @@
-# App6_Complete.py - Complete Multi-Lossless Coding Pipeline
-# Huffman Coding + CABAC Coding + RLE Comparison
-
 import heapq
 import os
 import time
@@ -98,7 +95,7 @@ class WorkingCABAC:
     """Simplified but reliable CABAC implementation"""
     
     def __init__(self):
-        self.prob_one = 0.5  # Simple fixed probability
+        self.prob_one = 0.5  
     
     def encode_binary_data(self, bitstring):
         """Simple reliable CABAC encoder"""
@@ -108,7 +105,6 @@ class WorkingCABAC:
         bits = [int(bit) for bit in bitstring]
         encoded_bits = []
         
-        # Simple arithmetic coding with fixed probability
         low = 0
         high = 0xFFFFFF  # 24-bit range for simplicity
         pending_bits = 0
