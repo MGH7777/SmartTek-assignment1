@@ -741,13 +741,7 @@ class DualModeCABACAnalyzer:
                     
                     print(f"   {specialized_type}: {improvement:+.1f}% improvement over generic")
         
-        print(f"\n🎯 KEY FINDINGS:")
-        print("=" * 50)
-        print("• Content-specific CABAC optimization provides measurable gains")
-        print("• Screen recordings benefit from coarser context modeling") 
-        print("• Surveillance footage needs finer context granularity")
-        print("• Context models adapt differently based on content patterns")
-        print("• Real video analysis validates synthetic model predictions")
+        
 
 def main():
     print("🎬 CABAC Video Content Analysis")
