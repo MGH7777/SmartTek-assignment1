@@ -6,7 +6,6 @@ import cv2
 from dataclasses import dataclass
 import matplotlib.pyplot as plt
 import csv
-import argparse
 import os
 
 @dataclass
@@ -298,7 +297,6 @@ class VideoFrameProcessor:
         
         return (frame.astype(np.int16) - prev_frame.astype(np.int16))
     
-    @staticmethod
     @staticmethod
     def residuals_to_binary(residuals: np.ndarray) -> Tuple[List[int], List[Tuple[int, int]]]:
         """Convert residuals to binary representation - OPTIMIZED VERSION"""
@@ -740,33 +738,268 @@ class DualModeCABACAnalyzer:
                     improvement = ((generic_bits - specialized_bits) / generic_bits) * 100
                     
                     print(f"   {specialized_type}: {improvement:+.1f}% improvement over generic")
-        
-        
+                    
 
+class CABACVisualizer:
+    """Creates comprehensive charts for CABAC analysis results"""
+    
+    @staticmethod
+    def create_compression_comparison_chart(results: dict, save_path: str = None):
+        """Create compression ratio comparison chart"""
+        plt.figure(figsize=(12, 8))
+        
+        # Extract data for plotting
+        content_types = []
+        compression_ratios = []
+        
+        for key, result in results.items():
+            if 'compression_ratios' in result:
+                for ctype, ratios in result['compression_ratios'].items():
+                    if ratios:  # Only if we have data
+                        avg_ratio = np.mean(ratios)
+                        content_types.append(ctype)
+                        compression_ratios.append(avg_ratio)
+        
+        if not content_types:
+            print("⚠️ No compression ratio data found for chart")
+            return
+        
+        # Create bar chart
+        colors = ['skyblue', 'lightcoral', 'lightgreen', 'gold', 'lightpink']
+        bars = plt.bar(content_types, compression_ratios, 
+                      color=colors[:len(content_types)], 
+                      edgecolor='black', alpha=0.7)
+        
+        # Add value labels on bars
+        for bar, ratio in zip(bars, compression_ratios):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.05,
+                    f'{ratio:.2f}', ha='center', va='bottom', fontweight='bold')
+        
+        plt.title('CABAC Compression Ratio Comparison by Content Type', fontsize=14, fontweight='bold')
+        plt.xlabel('Content Type', fontweight='bold')
+        plt.ylabel('Compression Ratio (Higher is Better)', fontweight='bold')
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"💾 Chart saved to: {save_path}")
+        
+        plt.show()
+    
+    @staticmethod
+    def create_adaptation_speed_chart(results: dict, save_path: str = None):
+        """Create context model adaptation speed chart"""
+        plt.figure(figsize=(12, 8))
+        
+        for key, result in results.items():
+            if 'adaptation_speeds' in result and 'frame_count' in result:
+                frame_count = result['frame_count']
+                for ctype, speeds in result['adaptation_speeds'].items():
+                    if speeds and frame_count > 0:
+                        frames = list(range(min(frame_count, len(speeds))))
+                        plt.plot(frames, speeds[:frame_count], 
+                                label=f'{ctype}', marker='o', linewidth=2, markersize=4)
+        
+        plt.title('Context Model Adaptation Speed Over Frames', fontsize=14, fontweight='bold')
+        plt.xlabel('Frame Number', fontweight='bold')
+        plt.ylabel('Average Context State (Lower = Faster Adaptation)', fontweight='bold')
+        plt.grid(True, linestyle='--', alpha=0.7)
+        plt.legend()
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"💾 Chart saved to: {save_path}")
+        
+        plt.show()
+    
+    @staticmethod
+    def create_performance_comparison_chart(results: dict, save_path: str = None):
+        """Create comprehensive performance comparison chart"""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Chart 1: Compression ratios
+        content_data = {}
+        for key, result in results.items():
+            if 'compression_ratios' in result:
+                for ctype, ratios in result['compression_ratios'].items():
+                    if ctype not in content_data:
+                        content_data[ctype] = []
+                    content_data[ctype].extend(ratios)
+        
+        # Calculate averages
+        avg_ratios = {ctype: np.mean(ratios) for ctype, ratios in content_data.items() if ratios}
+        
+        if avg_ratios:
+            colors1 = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+            bars1 = ax1.bar(avg_ratios.keys(), avg_ratios.values(), 
+                           color=colors1[:len(avg_ratios)], alpha=0.7)
+            
+            for bar, ratio in zip(bars1, avg_ratios.values()):
+                ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.05,
+                        f'{ratio:.2f}', ha='center', va='bottom', fontweight='bold')
+            
+            ax1.set_title('Average Compression Ratios', fontweight='bold')
+            ax1.set_ylabel('Compression Ratio', fontweight='bold')
+            ax1.grid(axis='y', linestyle='--', alpha=0.7)
+            ax1.tick_params(axis='x', rotation=45)
+        
+        # Chart 2: Adaptation speeds
+        adaptation_data = {}
+        for key, result in results.items():
+            if 'adaptation_speeds' in result:
+                for ctype, speeds in result['adaptation_speeds'].items():
+                    if ctype not in adaptation_data:
+                        adaptation_data[ctype] = []
+                    adaptation_data[ctype].extend(speeds)
+        
+        avg_speeds = {ctype: np.mean(speeds) for ctype, speeds in adaptation_data.items() if speeds}
+        
+        if avg_speeds:
+            colors2 = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+            bars2 = ax2.bar(avg_speeds.keys(), avg_speeds.values(), 
+                           color=colors2[:len(avg_speeds)], alpha=0.7)
+            
+            for bar, speed in zip(bars2, avg_speeds.values()):
+                ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.05,
+                        f'{speed:.1f}', ha='center', va='bottom', fontweight='bold')
+            
+            ax2.set_title('Average Context State (Adaptation Speed)', fontweight='bold')
+            ax2.set_ylabel('Context State', fontweight='bold')
+            ax2.grid(axis='y', linestyle='--', alpha=0.7)
+            ax2.tick_params(axis='x', rotation=45)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"💾 Performance chart saved to: {save_path}")
+        
+        plt.show()
+    
+    @staticmethod
+    def create_detailed_frame_analysis(frame_results: list, save_path: str = None):
+        """Create detailed frame-by-frame analysis chart"""
+        if not frame_results:
+            print("⚠️ No frame results data available")
+            return
+        
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+        
+        # Extract data for each content type
+        content_types = set()
+        for frame_result in frame_results:
+            for key in frame_result.keys():
+                if key not in ['frame_idx', 'video_path', 'detected_type']:
+                    content_types.add(key)
+        
+        content_types = list(content_types)
+        
+        # Chart 1: Compression ratios over frames
+        frame_numbers = [fr['frame_idx'] for fr in frame_results]
+        for ctype in content_types:
+            ratios = []
+            for fr in frame_results:
+                if ctype in fr and 'compression_ratio' in fr[ctype]:
+                    ratios.append(fr[ctype]['compression_ratio'])
+                else:
+                    ratios.append(0)
+            ax1.plot(frame_numbers, ratios, label=ctype, marker='o', linewidth=2)
+        
+        ax1.set_title('Compression Ratio Evolution Over Frames', fontweight='bold')
+        ax1.set_xlabel('Frame Number')
+        ax1.set_ylabel('Compression Ratio')
+        ax1.legend()
+        ax1.grid(True, linestyle='--', alpha=0.7)
+        
+        # Chart 2: LPS rates over frames
+        for ctype in content_types:
+            lps_rates = []
+            for fr in frame_results:
+                if ctype in fr and 'lps_rate' in fr[ctype]:
+                    lps_rates.append(fr[ctype]['lps_rate'])
+                else:
+                    lps_rates.append(0)
+            ax2.plot(frame_numbers, lps_rates, label=ctype, marker='s', linewidth=2)
+        
+        ax2.set_title('LPS Rate Evolution Over Frames', fontweight='bold')
+        ax2.set_xlabel('Frame Number')
+        ax2.set_ylabel('LPS Rate')
+        ax2.legend()
+        ax2.grid(True, linestyle='--', alpha=0.7)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"💾 Frame analysis chart saved to: {save_path}")
+        
+        plt.show()
+        
+        
 def main():
     print("🎬 CABAC Video Content Analysis")
     print("=" * 50)
+
+    # Initialize analyzer and visualizer
+    analyzer = DualModeCABACAnalyzer()
+    visualizer = CABACVisualizer()
     
     while True:
         print("\nChoose analysis mode:")
         print("1. Compare ALL CABAC algorithms")
         print("2. Use SPECIFIC algorithm (choose one)")  
         print("3. Run SYNTHETIC analysis")
-        print("4. Exit")
+        print("4. Generate charts from previous results")
+        print("5. Exit")
         
-        choice = input("\nEnter choice (1-4) [1]: ").strip() or "1"
+        choice = input("\nEnter choice (1-5) [1]: ").strip() or "1"
         
         if choice == "1":
-            analyze_real_video_interactive()
-        elif choice == "2":  # NEW
-            analyze_with_chosen_algorithm()
+            analyzer = analyze_real_video_interactive()
+            if analyzer and analyzer.results:
+                print("\n📊 Generating analysis charts...")
+                visualizer.create_compression_comparison_chart(analyzer.results)
+                visualizer.create_adaptation_speed_chart(analyzer.results)
+                visualizer.create_performance_comparison_chart(analyzer.results)
+                
+        elif choice == "2":
+            analyzer = analyze_with_chosen_algorithm()
+            if analyzer and analyzer.results:
+                print("\n📊 Generating comparison charts...")
+                visualizer.create_compression_comparison_chart(analyzer.results)
+                
         elif choice == "3":
-            run_synthetic_analysis_interactive()
+            analyzer = run_synthetic_analysis_interactive()
+            if analyzer and analyzer.results:
+                print("\n📊 Generating synthetic analysis charts...")
+                visualizer.create_compression_comparison_chart(analyzer.results)
+                visualizer.create_performance_comparison_chart(analyzer.results)
+                
         elif choice == "4":
+            if analyzer and analyzer.results:
+                print("\n📊 Generating charts from previous analysis...")
+                visualizer.create_compression_comparison_chart(analyzer.results)
+                visualizer.create_adaptation_speed_chart(analyzer.results)
+                visualizer.create_performance_comparison_chart(analyzer.results)
+                
+                # Check if we have frame results for detailed analysis
+                for key, result in analyzer.results.items():
+                    if 'frame_results' in result and result['frame_results']:
+                        visualizer.create_detailed_frame_analysis(result['frame_results'])
+                        break
+            else:
+                print("❌ No previous analysis results found. Please run an analysis first.")
+                
+        elif choice == "5":
             print("Goodbye! 👋")
             break
         else:
             print("❌ Invalid choice.")
+            continue
+
 
 def analyze_real_video_interactive():
     """Interactive real video analysis"""
@@ -818,8 +1051,10 @@ def analyze_real_video_interactive():
     if results:
         print("\n✅ Real video analysis completed!")
         analyzer.generate_comprehensive_report()
+        return analyzer
     else:
         print("❌ Analysis failed.")
+        return None     
 
 def run_synthetic_analysis_interactive():
     """Interactive synthetic analysis"""
