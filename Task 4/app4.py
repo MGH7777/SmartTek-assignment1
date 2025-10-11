@@ -410,12 +410,12 @@ if run_bench:
             huff_size = len(huff_payload) + accurate_byte_len(codebook)
             results.append(("Huffman", huff_size, t_huff, m_huff, dec_huff == raw_bytes))
 
-            # ---------------- Arithmetic (UPDATED) ----------------
+            # ---------------- Arithmetic ----------------
             (ac_payload, table, total, L, ac_size), t_ac, m_ac = benchmark(arithmetic_encode, raw_bytes)
             dec_ac = arithmetic_decode_wrapper(ac_payload, table, total, L)
             results.append(("Arithmetic", ac_size, t_ac, m_ac, dec_ac == raw_bytes))
 
-            # ---------------- CABAC-lite (UPDATED) ----------------
+            # ---------------- CABAC-lite ----------------
             (cab_payload, meta, bit_len, cab_size), t_cab, m_cab = benchmark(cabac_encode, raw_bytes)
             dec_cab = cabac_decode_wrapper(cab_payload, meta, bit_len)
             results.append(("CABAC-lite", cab_size, t_cab, m_cab, dec_cab == raw_bytes))

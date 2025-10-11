@@ -4,6 +4,7 @@ import time
 from collections import Counter
 from PIL import Image
 import numpy as np
+import matplotlib.pyplot as plt
 
 class HuffmanNode:
     def __init__(self, symbol=None, frequency=0):
@@ -90,6 +91,92 @@ class HuffmanCoding:
                 current_code = ""
         
         return bytes(decoded_bytes)
+
+    def visualize_huffman_tree(self):
+        """Visualize Huffman tree - MISSING COMPONENT 1"""
+        if self.tree is None:
+            print("No Huffman tree to visualize")
+            return
+        
+        fig, ax = plt.subplots(figsize=(15, 10))
+        
+        def calculate_positions(node, x=0, y=0, level=0, pos_dict=None, width=20.0):
+            if pos_dict is None:
+                pos_dict = {}
+            
+            if node is not None:
+                pos_dict[node] = (x, y)
+                if node.left:
+                    calculate_positions(node.left, x - width/(2**(level+1)), y-1, level+1, pos_dict, width)
+                if node.right:
+                    calculate_positions(node.right, x + width/(2**(level+1)), y-1, level+1, pos_dict, width)
+            return pos_dict
+        
+        def draw_tree(node, pos_dict, ax):
+            if node is None:
+                return
+                
+            x, y = pos_dict[node]
+            
+            # Draw node
+            if node.symbol is not None:
+                ax.text(x, y, f"Sym: {node.symbol}\nFreq: {node.frequency}", 
+                       ha='center', bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue"), 
+                       fontsize=8)
+            else:
+                ax.text(x, y, f"Freq: {node.frequency}", 
+                       ha='center', bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen"), 
+                       fontsize=8)
+            
+            # Draw connections to children
+            if node.left and node.left in pos_dict:
+                x1, y1 = pos_dict[node.left]
+                ax.plot([x, x1], [y, y1], 'k-', linewidth=1)
+                draw_tree(node.left, pos_dict, ax)
+                
+            if node.right and node.right in pos_dict:
+                x1, y1 = pos_dict[node.right]
+                ax.plot([x, x1], [y, y1], 'k-', linewidth=1)
+                draw_tree(node.right, pos_dict, ax)
+        
+        pos_dict = calculate_positions(self.tree)
+        draw_tree(self.tree, pos_dict, ax)
+        ax.set_title("Huffman Tree Visualization", fontsize=14, fontweight='bold')
+        ax.axis('off')
+        
+        plt.tight_layout()
+        plt.show()
+
+    def visualize_codebook(self):
+        """Visualize Huffman codebook - MISSING COMPONENT 2"""
+        if not self.codebook:
+            print("No codebook to visualize")
+            return
+        
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        # Get top 20 symbols for clean visualization
+        sorted_items = sorted(self.codebook.items(), key=lambda x: len(x[1]))[:20]
+        symbols = [f"Sym {k}" for k, v in sorted_items]
+        code_lengths = [len(v) for k, v in sorted_items]
+        codes = [v for k, v in sorted_items]
+        
+        y_pos = np.arange(len(symbols))
+        bars = ax.barh(y_pos, code_lengths, color='skyblue', alpha=0.7)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(symbols)
+        ax.set_xlabel('Code Length (bits)')
+        ax.set_title('Huffman Codebook - Code Lengths per Symbol', fontsize=14, fontweight='bold')
+        ax.grid(axis='x', alpha=0.3)
+        
+        # Add code values on bars
+        for i, (bar, code) in enumerate(zip(bars, codes)):
+            width = bar.get_width()
+            ax.text(width + 0.1, bar.get_y() + bar.get_height()/2, 
+                   f"'{code}'", ha='left', va='center', fontsize=9, fontfamily='monospace')
+        
+        plt.tight_layout()
+        plt.show()
 
 class WorkingCABAC:
     """Simplified but reliable CABAC implementation"""
@@ -302,6 +389,7 @@ class MultiLosslessCodingPipeline:
         self.huffman = HuffmanCoding()
         self.cabac = WorkingCABAC()
         self.rle = RLEEncoder()
+        self.comparison_results = {}
     
     def load_image_data(self, image_path):
         """Load and prepare image data for compression"""
@@ -495,10 +583,96 @@ class MultiLosslessCodingPipeline:
         pipeline_stats = self.huffman_cabac_pipeline(data)
         results['pipeline'] = pipeline_stats['overall']
         
+        # Store for visualization
+        self.comparison_results = results
+        
         # Print comparison summary
         self._print_comparison_summary(results)
         
         return results
+
+    def visualize_performance_comparison(self):
+        """Visualize performance comparison - MISSING COMPONENT 3"""
+        if not self.comparison_results:
+            print("No comparison results to visualize")
+            return
+        
+        methods = list(self.comparison_results.keys())
+        
+        # Prepare data for plotting
+        ratios = []
+        savings = []
+        times = []
+        
+        for method in methods:
+            stats = self.comparison_results[method]
+            if method == 'pipeline':
+                ratios.append(stats['ratio'])
+                savings.append(stats['saving'])
+                times.append(stats['time'])
+            else:
+                ratios.append(stats['compression_ratio'])
+                savings.append(stats['space_saving'])
+                times.append(stats['time'])
+        
+        # Create subplots
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+        
+        # Plot 1: Compression Ratios
+        bars1 = ax1.bar(methods, ratios, color=['#ff9999', '#66b3ff', '#99ff99', '#ffcc99'])
+        ax1.set_title('Compression Ratios by Method', fontsize=14, fontweight='bold')
+        ax1.set_ylabel('Compression Ratio')
+        ax1.tick_params(axis='x', rotation=45)
+        for bar in bars1:
+            height = bar.get_height()
+            ax1.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{height:.2f}', ha='center', va='bottom', fontweight='bold')
+        
+        # Plot 2: Space Savings
+        bars2 = ax2.bar(methods, savings, color=['#ff9999', '#66b3ff', '#99ff99', '#ffcc99'])
+        ax2.set_title('Space Savings by Method', fontsize=14, fontweight='bold')
+        ax2.set_ylabel('Space Saving (%)')
+        ax2.tick_params(axis='x', rotation=45)
+        for bar in bars2:
+            height = bar.get_height()
+            ax2.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{height:.1f}%', ha='center', va='bottom', fontweight='bold')
+        
+        # Plot 3: Execution Times
+        bars3 = ax3.bar(methods, times, color=['#ff9999', '#66b3ff', '#99ff99', '#ffcc99'])
+        ax3.set_title('Execution Times by Method', fontsize=14, fontweight='bold')
+        ax3.set_ylabel('Time (seconds)')
+        ax3.tick_params(axis='x', rotation=45)
+        for bar in bars3:
+            height = bar.get_height()
+            ax3.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{height:.4f}s', ha='center', va='bottom', fontweight='bold')
+        
+        # Plot 4: Overall Performance Radar (simplified)
+        normalized_ratios = [r/max(ratios) for r in ratios]
+        normalized_savings = [s/max(savings) for s in savings]
+        normalized_times = [1 - (t/max(times)) for t in times]  # Invert time (lower is better)
+        
+        categories = ['Compression\nRatio', 'Space\nSaving', 'Speed']
+        N = len(categories)
+        
+        angles = [n / float(N) * 2 * np.pi for n in range(N)]
+        angles += angles[:1]
+        
+        for i, method in enumerate(methods):
+            values = [normalized_ratios[i], normalized_savings[i], normalized_times[i]]
+            values += values[:1]
+            ax4.plot(angles, values, 'o-', linewidth=2, label=method.upper())
+            ax4.fill(angles, values, alpha=0.1)
+        
+        ax4.set_xticks(angles[:-1])
+        ax4.set_xticklabels(categories)
+        ax4.set_ylim(0, 1)
+        ax4.set_title('Overall Performance Comparison', fontsize=14, fontweight='bold')
+        ax4.legend(loc='upper right')
+        
+        plt.tight_layout()
+        plt.show()
     
     def _print_stats(self, stats):
         """Print compression statistics in consistent format"""
@@ -568,13 +742,26 @@ def main():
         print("1. Full Pipeline (Huffman → CABAC)")
         print("2. Compare All Methods (Huffman, CABAC, RLE, Pipeline)")
         print("3. Individual Algorithm Test")
-        print("4. Exit")
+        print("4. Visualize Huffman Tree")
+        print("5. Visualize Huffman Codebook") 
+        print("6. Visualize Performance Comparison")
+        print("7. Exit")
         
-        choice = input("\nEnter choice (1-4) [1]: ").strip() or "1"
+        choice = input("\nEnter choice (1-7) [1]: ").strip() or "1"
         
-        if choice == "4":
+        if choice == "7":
             print("Goodbye!")
             break
+        
+        if choice in ["4", "5", "6"]:
+            # Direct visualization options
+            if choice == "4":
+                pipeline.huffman.visualize_huffman_tree()
+            elif choice == "5":
+                pipeline.huffman.visualize_codebook()
+            elif choice == "6":
+                pipeline.visualize_performance_comparison()
+            continue
         
         print("\nChoose input type:")
         print("1. Image file (using Pillow)")
