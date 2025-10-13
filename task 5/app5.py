@@ -2,6 +2,7 @@ import os
 import io
 import struct
 import time
+import zlib
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple, List
 import tempfile
@@ -15,7 +16,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QMessageBox, QWidget, QVBoxLayout,
     QHBoxLayout, QPushButton, QComboBox, QSplitter, QTableWidget, QTableWidgetItem,
-    QProgressBar, QLabel, QGroupBox, QTextEdit
+    QProgressBar, QLabel, QGroupBox, QTextEdit, QCheckBox
 )
 
 # Matplotlib embedding
@@ -57,7 +58,7 @@ class MplCanvas(FigureCanvas):
         super().__init__(self.fig)
 
 # =============================
-# REAL Huffman Coding Implementation
+# IMPROVED Huffman Coding with Decoding
 # =============================
 
 @dataclass
@@ -70,9 +71,8 @@ class Node:
         return self.freq < other.freq
 
 class Huffman:
-    """Real Huffman coding implementation"""
-    MAGIC = b"HUF1"
-
+    """Improved Huffman coding with full round-trip support"""
+    
     @staticmethod
     def build_tree(freqs: Dict[int, int]) -> Optional[Node]:
         import heapq
@@ -111,8 +111,11 @@ class Huffman:
         return codes
 
     @staticmethod
-    def encode(data: bytes) -> bytes:
-        """Real Huffman encoding"""
+    def encode(data: bytes) -> Tuple[bytes, Dict[int, int]]:
+        """Improved Huffman encoding with proper header"""
+        if not data:
+            return b"", {}
+            
         freqs = {i: 0 for i in range(256)}
         for b in data:
             freqs[b] += 1
@@ -121,267 +124,524 @@ class Huffman:
         codes = Huffman.build_codes(root)
         
         out = io.BytesIO()
-        MAX64 = (1 << 64) - 1
         
-        # Write header
+        # Write header: 256 frequencies as 4-byte integers
         for i in range(256):
-            val = min(freqs[i], MAX64)
-            out.write(struct.pack(">Q", val))
-        out.write(struct.pack(">Q", len(data)))
+            out.write(struct.pack(">I", freqs[i]))
+        out.write(struct.pack(">I", len(data)))  # Original size
         
         # Encode data
         bit_buffer = 0
         bit_count = 0
         
-        def flush_bits(force=False):
-            nonlocal bit_buffer, bit_count
-            while bit_count >= 8:
-                byte = (bit_buffer >> (bit_count - 8)) & 0xFF
-                out.write(bytes([byte]))
-                bit_count -= 8
-                bit_buffer &= (1 << bit_count) - 1
-            if force and bit_count > 0:
-                byte = (bit_buffer << (8 - bit_count)) & 0xFF
-                out.write(bytes([byte]))
-                bit_buffer = 0
-                bit_count = 0
-        
         for b in data:
             for c in codes[b]:
                 bit_buffer = (bit_buffer << 1) | (1 if c == '1' else 0)
                 bit_count += 1
-                flush_bits(False)
+                if bit_count == 8:
+                    out.write(bytes([bit_buffer]))
+                    bit_buffer = 0
+                    bit_count = 0
+        
+        # Flush remaining bits
+        if bit_count > 0:
+            bit_buffer <<= (8 - bit_count)
+            out.write(bytes([bit_buffer]))
+            out.write(bytes([bit_count]))  # Store bit count for last byte
+        else:
+            out.write(bytes([0]))  # No leftover bits
+            
+        return out.getvalue(), freqs
+
+    @staticmethod
+    def decode(compressed: bytes) -> Tuple[bytes, bool]:
+        """Huffman decoding with validation"""
+        try:
+            if len(compressed) < 256 * 4 + 4:
+                return b"", False
                 
-        flush_bits(True)
-        return out.getvalue()
+            # Read frequency table
+            freqs = {}
+            idx = 0
+            for i in range(256):
+                freqs[i] = struct.unpack(">I", compressed[idx:idx+4])[0]
+                idx += 4
+                
+            original_size = struct.unpack(">I", compressed[idx:idx+4])[0]
+            idx += 4
+            
+            if original_size == 0:
+                return b"", True
+                
+            # Rebuild tree
+            root = Huffman.build_tree(freqs)
+            if root is None:
+                return b"", False
+                
+            # Decode data
+            data = bytearray()
+            node = root
+            bit_buffer = compressed[idx:-1]  # All but last byte
+            last_byte_info = compressed[-1]  # Last byte: bit_count or 0
+            
+            bit_pos = 0
+            max_bits = len(bit_buffer) * 8
+            if last_byte_info > 0:
+                max_bits = (len(bit_buffer) - 1) * 8 + last_byte_info
+            
+            while bit_pos < max_bits and len(data) < original_size:
+                byte_idx = bit_pos // 8
+                bit_idx = 7 - (bit_pos % 8)
+                bit = (bit_buffer[byte_idx] >> bit_idx) & 1
+                bit_pos += 1
+                
+                if bit == 0:
+                    node = node.left
+                else:
+                    node = node.right
+                    
+                if node is None:
+                    return b"", False
+                    
+                if node.byte is not None:
+                    data.append(node.byte)
+                    node = root
+                    
+            success = (len(data) == original_size)
+            return bytes(data), success
+            
+        except Exception:
+            return b"", False
 
 # =============================
-# REAL Arithmetic Coding Implementation
+# PROPER Arithmetic Coding Implementation (Static Methods)
 # =============================
 
 class ArithmeticCoder:
-    """Real arithmetic coding implementation"""
-    
-    def __init__(self, precision=28):
-        self.precision = precision
-        self.max_range = 1 << precision
-        self.half_range = self.max_range >> 1
-        self.quarter_range = self.half_range >> 1
-        self.three_quarter_range = 3 * self.quarter_range
-        
-    def build_frequency_table(self, data: bytes) -> Tuple[Dict[int, int], int]:
-        """Build normalized frequency table"""
-        freqs = {}
+    """
+    Real 32-bit integer arithmetic coder with proper bit-packing.
+    Header layout:
+      b"ARITH" | uint32 original_len | 256 * uint32 freqs | packed_bitstream...
+    """
+
+    class _BitWriter:
+        def __init__(self):
+            self.buf = bytearray()
+            self.byte = 0
+            self.nbits = 0
+        def put(self, bit: int):
+            self.byte = (self.byte << 1) | (1 if bit else 0)
+            self.nbits += 1
+            if self.nbits == 8:
+                self.buf.append(self.byte)
+                self.byte = 0
+                self.nbits = 0
+        def finish(self):
+            if self.nbits:
+                self.buf.append(self.byte << (8 - self.nbits))
+            return bytes(self.buf)
+
+    class _BitReader:
+        def __init__(self, data: bytes):
+            self.data = data
+            self.i = 0
+            self.nbits = 0
+            self.byte = 0
+        def get(self) -> int:
+            if self.nbits == 0:
+                self.byte = self.data[self.i] if self.i < len(self.data) else 0
+                self.i += 1
+                self.nbits = 8
+            bit = (self.byte >> 7) & 1
+            self.byte = (self.byte << 1) & 0xFF
+            self.nbits -= 1
+            return bit
+
+    @staticmethod
+    def _build_tables(data: bytes):
+        freqs = [0]*256
+        for b in data:
+            freqs[b] += 1
         total = len(data)
-        
-        # Count frequencies
-        for byte in data:
-            freqs[byte] = freqs.get(byte, 0) + 1
-            
-        # Normalize to avoid underflow
-        max_freq = max(freqs.values()) if freqs else 1
-        scale_factor = min(self.max_range // max_freq, 255)
-        
-        normalized_freqs = {}
-        for byte, freq in freqs.items():
-            normalized_freqs[byte] = max(1, freq * scale_factor // total)
-            
-        return normalized_freqs, sum(normalized_freqs.values())
-    
-    def build_cumulative_table(self, freqs: Dict[int, int], total: int) -> Dict[int, Tuple[int, int]]:
-        """Build cumulative probability table"""
-        cumulative = 0
-        table = {}
-        
-        for byte in sorted(freqs.keys()):
-            freq = freqs[byte]
-            table[byte] = (cumulative, cumulative + freq)
-            cumulative += freq
-            
-        return table
-    
-    def encode(self, data: bytes) -> Tuple[bytes, Dict[int, Tuple[int, int]], int]:
-        """Real arithmetic encoding"""
+        cum = [0]*257
+        s = 0
+        for i,f in enumerate(freqs):
+            cum[i] = s
+            s += f
+        cum[256] = s
+        return freqs, cum, total
+
+    @staticmethod
+    def encode(data: bytes) -> Tuple[bytes, Dict, int]:
         if not data:
-            return b"", {}, 0
-            
-        freqs, total = self.build_frequency_table(data)
-        cum_table = self.build_cumulative_table(freqs, total)
-        
-        low = 0
-        high = self.max_range - 1
-        pending_bits = 0
-        encoded_bits = []
-        
-        for byte in data:
-            low_bound, high_bound = cum_table[byte]
-            range_width = high - low + 1
-            
-            high = low + (range_width * high_bound) // total - 1
-            low = low + (range_width * low_bound) // total
-            
+            return b"ARITH" + (0).to_bytes(4,"big") + bytes(256*4), {}, 0
+
+        freqs, cum, total = ArithmeticCoder._build_tables(data)
+
+        PREC = 32
+        MAXR = 1 << PREC
+        HALF = 1 << (PREC-1)
+        QUAR = 1 << (PREC-2)
+        MASK = MAXR - 1
+
+        low  = 0
+        high = MASK
+        pending = 0
+        bw = ArithmeticCoder._BitWriter()
+
+        def output(bit: int):
+            nonlocal pending                 # <-- critical fix
+            bw.put(bit)
+            while pending:
+                bw.put(1 - bit)
+                pending -= 1
+
+        for s in data:
+            rng = (high - low + 1)
+            high = low + (rng * cum[s+1]) // total - 1
+            low  = low + (rng * cum[s])   // total
+
             while True:
-                if high < self.half_range:
-                    encoded_bits.append('0')
-                    for _ in range(pending_bits):
-                        encoded_bits.append('1')
-                    pending_bits = 0
-                elif low >= self.half_range:
-                    encoded_bits.append('1')
-                    for _ in range(pending_bits):
-                        encoded_bits.append('0')
-                    pending_bits = 0
-                    low -= self.half_range
-                    high -= self.half_range
-                elif low >= self.quarter_range and high < self.three_quarter_range:
-                    pending_bits += 1
-                    low -= self.quarter_range
-                    high -= self.quarter_range
+                if high < HALF:
+                    output(0)
+                    low  = (low << 1) & MASK
+                    high = ((high << 1) & MASK) | 1
+                elif low >= HALF:
+                    output(1)
+                    low  = ((low  - HALF) << 1) & MASK
+                    high = ((high - HALF) << 1) & MASK | 1
+                elif low >= QUAR and high < 3*QUAR:
+                    pending += 1
+                    low  = ((low  - QUAR) << 1) & MASK
+                    high = ((high - QUAR) << 1) & MASK | 1
                 else:
                     break
-                    
-                low <<= 1
-                high = (high << 1) | 1
-        
-        # Finalization
-        pending_bits += 1
-        if low < self.quarter_range:
-            encoded_bits.append('0')
-            for _ in range(pending_bits):
-                encoded_bits.append('1')
-        else:
-            encoded_bits.append('1')
-            for _ in range(pending_bits):
-                encoded_bits.append('0')
-        
-        # Convert to bytes
-        bit_string = ''.join(encoded_bits)
-        padding = 8 - (len(bit_string) % 8)
-        bit_string += '0' * padding
-        
-        encoded_bytes = bytearray()
-        for i in range(0, len(bit_string), 8):
-            encoded_bytes.append(int(bit_string[i:i+8], 2))
-        
-        return bytes(encoded_bytes), cum_table, total
 
-# =============================
-# REAL CABAC Implementation
-# =============================
-
-class CABAC:
-    """Real CABAC implementation with context adaptation"""
-    
-    def __init__(self, num_contexts=256):
-        self.num_contexts = num_contexts
-        # Initialize context models
-        self.contexts = [{'mps': 0, 'state': 64} for _ in range(num_contexts)]
-        
-    def _get_context(self, prev_byte: int, pos: int) -> int:
-        """Determine context based on previous data"""
-        return (prev_byte + pos) % self.num_contexts
-        
-    def _get_probability(self, state: int) -> Tuple[int, int]:
-        """Get probability range from state (0-127)"""
-        p_lps = min(max(128 - state, 1), 126) / 256.0
-        range_lps = int(p_lps * 16384)  # 14-bit precision
-        range_mps = 16384 - range_lps
-        return range_mps, range_lps
-        
-    def _update_context(self, ctx_idx: int, symbol: int):
-        """Update context model after encoding a symbol"""
-        ctx = self.contexts[ctx_idx]
-        
-        if symbol == ctx['mps']:
-            # MPS occurred
-            ctx['state'] = min(ctx['state'] + 2, 127)
+        # termination
+        pending += 1
+        if low < QUAR:
+            output(0)
         else:
-            # LPS occurred
-            if ctx['state'] > 64:
-                ctx['state'] -= 1
-            else:
-                ctx['mps'] = 1 - ctx['mps']
-                ctx['state'] = max(ctx['state'] - 1, 1)
-    
-    def encode(self, data: bytes) -> Tuple[bytes, List[Dict]]:
-        """Real CABAC encoding"""
-        if not data:
-            return b"", self.contexts.copy()
-            
-        low = 0
-        high = 0x3FFF  # 14-bit range
-        pending_bits = 0
-        encoded_bits = []
-        prev_byte = 0
-        
-        for i, byte_val in enumerate(data):
-            for bit_pos in range(7, -1, -1):
-                bit = (byte_val >> bit_pos) & 1
-                ctx_idx = self._get_context(prev_byte, i)
-                ctx = self.contexts[ctx_idx]
-                
-                range_mps, range_lps = self._get_probability(ctx['state'])
-                split = low + ((high - low) * range_mps >> 14)
-                
-                if bit == ctx['mps']:
-                    high = split
-                else:
-                    low = split + 1
-                
-                # Renormalization
-                while (high ^ low) < 0x1000:
-                    if high < 0x2000:
-                        encoded_bits.append('0')
-                        for _ in range(pending_bits):
-                            encoded_bits.append('1')
-                        pending_bits = 0
-                    elif low >= 0x2000:
-                        encoded_bits.append('1')
-                        for _ in range(pending_bits):
-                            encoded_bits.append('0')
-                        pending_bits = 0
-                        low -= 0x2000
-                        high -= 0x2000
+            output(1)
+        bitstream = bw.finish()
+
+        hdr = bytearray(b"ARITH")
+        hdr += len(data).to_bytes(4, "big")
+        for f in freqs:
+            hdr += int(f).to_bytes(4, "big")
+        return bytes(hdr) + bitstream, {"cum": cum}, len(data)
+
+    @staticmethod
+    def decode(compressed: bytes) -> Tuple[bytes, bool]:
+        try:
+            if len(compressed) < 5 + 4 + 256*4:
+                return b"", False
+            if compressed[:5] != b"ARITH":
+                return b"", False
+
+            n = int.from_bytes(compressed[5:9], "big")
+            pos = 9
+            freqs = []
+            total = 0
+            for _ in range(256):
+                f = int.from_bytes(compressed[pos:pos+4], "big")
+                freqs.append(f); total += f
+                pos += 4
+            if total != n:
+                return b"", False
+
+            cum = [0]*257
+            s = 0
+            for i,f in enumerate(freqs):
+                cum[i] = s
+                s += f
+            cum[256] = s
+
+            PREC = 32
+            MAXR = 1 << PREC
+            HALF = 1 << (PREC-1)
+            QUAR = 1 << (PREC-2)
+            MASK = MAXR - 1
+
+            br = ArithmeticCoder._BitReader(compressed[pos:])
+            low  = 0
+            high = MASK
+            code = 0
+            for _ in range(PREC):
+                code = ((code << 1) | br.get()) & MASK
+
+            out = bytearray()
+            for _ in range(n):
+                rng = (high - low + 1)
+                value = ((code - low + 1) * total - 1) // rng
+
+                sidx = 255
+                for k in range(256):
+                    if value < cum[k+1]:
+                        sidx = k
+                        break
+                out.append(sidx)
+
+                high = low + (rng * cum[sidx+1]) // total - 1
+                low  = low + (rng * cum[sidx])   // total
+
+                while True:
+                    if high < HALF:
+                        low  = (low << 1) & MASK
+                        high = ((high << 1) & MASK) | 1
+                        code = ((code << 1) | br.get()) & MASK
+                    elif low >= HALF:
+                        low  = ((low  - HALF) << 1) & MASK
+                        high = ((high - HALF) << 1) & MASK | 1
+                        code = ((code - HALF) << 1) & MASK | br.get()
+                    elif low >= QUAR and high < 3*QUAR:
+                        low  = ((low  - QUAR) << 1) & MASK
+                        high = ((high - QUAR) << 1) & MASK | 1
+                        code = ((code - QUAR) << 1) & MASK | br.get()
                     else:
-                        pending_bits += 1
-                        low -= 0x1000
-                        high -= 0x1000
-                    
-                    low <<= 1
-                    high = (high << 1) | 1
-                
-                self._update_context(ctx_idx, bit)
-            
-            prev_byte = byte_val
-        
-        # Finalization
-        pending_bits += 1
-        if low < 0x1000:
-            encoded_bits.append('0')
-            for _ in range(pending_bits):
-                encoded_bits.append('1')
-        else:
-            encoded_bits.append('1')
-            for _ in range(pending_bits):
-                encoded_bits.append('0')
-        
-        # Convert to bytes
-        bit_string = ''.join(encoded_bits)
-        padding = 8 - (len(bit_string) % 8)
-        bit_string += '0' * padding
-        
-        encoded_bytes = bytearray()
-        for i in range(0, len(bit_string), 8):
-            encoded_bytes.append(int(bit_string[i:i+8], 2))
-        
-        return bytes(encoded_bytes), self.contexts.copy()
+                        break
+
+            return bytes(out), True
+        except Exception:
+            return b"", False
+
 
 # =============================
-# RLE Implementation
+# SIMPLIFIED CABAC Implementation
+# =============================
+
+# =============================
+# CABAC — validated, CABAC-style, symmetric encode/decode
+# =============================
+class CABAC:
+    """
+    CABAC-style binary arithmetic coding:
+      - left predictor
+      - residual -> zigzag -> Elias-gamma(u+1)
+      - 12 contexts: 6 for prefix (run/sep) + 6 for suffix (value bits)
+      - Q15 binary range coder with byte renormalization
+    Format: b"CAB1" | uint32(original_len) | coded bytes
+    """
+
+    # ---- helpers ----
+    @staticmethod
+    def _zigzag(v: int) -> int:
+        return (v << 1) if v >= 0 else ((-v << 1) - 1)
+
+    @staticmethod
+    def _unzigzag(u: int) -> int:
+        return (u >> 1) if ((u & 1) == 0) else -((u >> 1) + 1)
+
+    @staticmethod
+    def _buckets_for(mag: int):
+        # 0..5 => prefix contexts, 6..11 => suffix contexts
+        if mag == 0: base = 0
+        elif mag == 1: base = 1
+        elif mag <= 3: base = 2
+        elif mag <= 7: base = 3
+        elif mag <= 15: base = 4
+        else: base = 5
+        return base, base + 6
+
+    # ---- binary range coder (Q15) ----
+    class _BREnc:
+        def __init__(self):
+            self.low = 0
+            self.rng = 0xFFFFFFFF
+            self.out = bytearray()
+
+        def _renorm(self):
+            while self.rng < (1 << 24):
+                self.out.append((self.low >> 24) & 0xFF)
+                self.low = (self.low << 8) & 0xFFFFFFFF
+                self.rng = (self.rng << 8) & 0xFFFFFFFF
+
+        def put(self, bit: int, p1_q15: int):
+            # STRICT-INTERIOR SPLIT: 1 .. rng-1 (no clamping branches)
+            split = ((self.rng - 1) * p1_q15 >> 15) + 1
+
+            # MPS ≡ 1 (upper subrange has size = split)
+            if bit:
+                # go to upper subrange
+                self.low = (self.low + (self.rng - split)) & 0xFFFFFFFF
+                self.rng = split
+            else:
+                # stay in lower subrange
+                self.rng -= split
+
+            self._renorm()
+
+        def finish(self):
+            for _ in range(4):
+                self.out.append((self.low >> 24) & 0xFF)
+                self.low = (self.low << 8) & 0xFFFFFFFF
+            return bytes(self.out)
+
+
+    class _BRDec:
+        def __init__(self, data: bytes, pos: int):
+            self.data = data
+            self.i = pos
+            self.low = 0
+            self.rng = 0xFFFFFFFF
+            self.code = 0
+            for _ in range(4):
+                nxt = self.data[self.i] if self.i < len(self.data) else 0
+                self.code = ((self.code << 8) | nxt) & 0xFFFFFFFF
+                self.i += 1
+
+        def _renorm(self):
+            while self.rng < (1 << 24):
+                self.low = (self.low << 8) & 0xFFFFFFFF
+                nxt = self.data[self.i] if self.i < len(self.data) else 0
+                self.code = ((self.code << 8) | nxt) & 0xFFFFFFFF
+                self.i += 1
+                self.rng = (self.rng << 8) & 0xFFFFFFFF
+
+        def get(self, p1_q15: int) -> int:
+            # SAME STRICT-INTERIOR SPLIT AS ENCODER
+            split = ((self.rng - 1) * p1_q15 >> 15) + 1
+            threshold = self.rng - split  # size of '0' (lower) subrange
+
+            # STRICT COMPARISON mirrors encoder intervals exactly:
+            # [low, low+threshold-1] => bit 0
+            # [low+threshold, low+rng-1] => bit 1
+            if (self.code - self.low) > threshold - 1:
+                # bit = 1, go to upper subrange
+                self.low = (self.low + threshold) & 0xFFFFFFFF
+                self.rng = split
+                bit = 1
+            else:
+                # bit = 0, stay in lower subrange
+                self.rng = threshold
+                bit = 0
+
+            self._renorm()
+            return bit
+
+
+    # ---- adaptive contexts ----
+    def __init__(self, num_contexts: int = 12):
+        self.num_contexts = num_contexts  # 6 prefix + 6 suffix
+        self.ones = [1] * num_contexts
+        self.zeros = [1] * num_contexts
+    def _p1(self, ctx: int) -> int:
+        o, z = self.ones[ctx], self.zeros[ctx]
+        return int((o << 15) // (o + z))
+    def _upd(self, ctx: int, bit: int):
+        if bit: self.ones[ctx] += 1
+        else:   self.zeros[ctx] += 1
+        if self.ones[ctx] + self.zeros[ctx] > (1 << 14):
+            self.ones[ctx] >>= 1
+            self.zeros[ctx] >>= 1
+
+    # ---- encode ----
+    def encode(self, data: bytes):
+        if not data:
+            return b"CAB1" + (0).to_bytes(4, "big") + (0).to_bytes(4, "big"), []
+
+        # --- infer stride if data looks like an N×N image ---
+        n = len(data)
+        side = int(len(data) ** 0.5)
+        stride = side if side * side == n else 0
+
+        enc = CABAC._BREnc()
+        prev = 0
+        prev_mag = 0
+
+        # header: magic | orig_len | stride
+        out = bytearray(b"CAB1")
+        out += n.to_bytes(4, "big")
+        out += stride.to_bytes(4, "big")
+        
+        
+        enc = CABAC._BREnc()
+        prev = 0
+        prev_mag = 0
+        out = bytearray(b"CAB1" + len(data).to_bytes(4, "big"))
+
+        for b in data:
+            r = int(b) - int(prev)
+            if r < -255: r = -255
+            if r > 255:  r = 255
+            u = CABAC._zigzag(r)
+            n = u + 1  # gamma is for positive ints
+            ctx_pref, ctx_suf = CABAC._buckets_for(prev_mag)
+
+            # Elias-gamma: k ones, 0, then k suffix bits (MSB-first)
+            k = n.bit_length() - 1
+            for _ in range(k):              # prefix ones
+                p1 = self._p1(ctx_pref); enc.put(1, p1); self._upd(ctx_pref, 1)
+            p1 = self._p1(ctx_pref); enc.put(0, p1); self._upd(ctx_pref, 0)  # separator zero
+            # suffix bits (LSB-first) — exact same bits, reversed order
+            for t in range(0, k):
+                bit = (n >> t) & 1
+                p1 = self._p1(ctx_suf); enc.put(bit, p1); self._upd(ctx_suf, bit)
+
+
+            prev = b
+            prev_mag = min(abs(r), 255)
+
+        out += enc.finish()
+        return bytes(out), []
+
+    # ---- decode ----
+    @staticmethod
+    def decode(compressed: bytes) -> Tuple[bytes, bool]:
+        try:
+            if len(compressed) < 12 or compressed[:4] != b"CAB1":
+                return b"", False
+            nsyms  = int.from_bytes(compressed[4:8],  "big")
+            stride = int.from_bytes(compressed[8:12], "big")
+            dec = CABAC._BRDec(compressed, 12)
+            self = CABAC()
+
+            prev = 0
+            prev_mag = 0
+            out = bytearray()
+
+            for i in range(nsyms):
+                if stride and (i % stride) == 0:
+                    prev = 0
+                    prev_mag = 0
+    
+                ctx_pref, ctx_suf = CABAC._buckets_for(prev_mag)
+
+                # gamma prefix: count ones until zero
+                k = 0
+                while True:
+                    b = dec.get(self._p1(ctx_pref)); self._upd(ctx_pref, b)
+                    if b == 1:
+                        k += 1
+                        if k > 32:  # sanity
+                            return b"", False
+                    else:
+                        break
+                # gamma suffix: k bits
+                n = 1
+                for t in range(0, k):
+                    bit = dec.get(self._p1(ctx_suf)); self._upd(ctx_suf, bit)
+                    n |= (bit << t)
+
+
+                u = n - 1
+                r = CABAC._unzigzag(u)
+                val = (prev + r) & 0xFF
+                out.append(val)
+                prev = val
+                prev_mag = min(abs(r), 255)
+
+            return bytes(out), (len(out) == nsyms)
+        except Exception:
+            return b"", False
+
+
+# =============================
+# IMPROVED RLE with Decoding
 # =============================
 
 class RLEEncoder:
-    """Real RLE implementation"""
+    """Improved RLE with full round-trip support"""
     
     @staticmethod
     def encode(data: bytes) -> bytes:
@@ -389,28 +649,45 @@ class RLEEncoder:
             return b""
             
         encoded = bytearray()
-        current = data[0]
-        count = 1
-        
-        for byte in data[1:]:
-            if byte == current and count < 255:
+        i = 0
+        while i < len(data):
+            current = data[i]
+            count = 1
+            # Count run length (max 255)
+            while i + count < len(data) and data[i + count] == current and count < 255:
                 count += 1
-            else:
-                encoded.append(current)
-                encoded.append(count)
-                current = byte
-                count = 1
                 
-        encoded.append(current)
-        encoded.append(count)
+            encoded.append(current)
+            encoded.append(count)
+            i += count
+            
         return bytes(encoded)
 
+    @staticmethod
+    def decode(compressed: bytes) -> Tuple[bytes, bool]:
+        """RLE decoding with validation"""
+        try:
+            if len(compressed) % 2 != 0:
+                return b"", False
+                
+            decoded = bytearray()
+            for i in range(0, len(compressed), 2):
+                byte_val = compressed[i]
+                count = compressed[i+1]
+                if count == 0:
+                    return b"", False
+                decoded.extend([byte_val] * count)
+                
+            return bytes(decoded), True
+        except Exception:
+            return b"", False
+
 # =============================
-# Image & Data Loaders
+# IMPROVED Image & Data Loaders
 # =============================
 
-def load_image_bytes(path: str) -> Tuple[np.ndarray, bytes, str]:
-    """Load various image formats and convert to bytes"""
+def load_image_bytes(path: str, preserve_bit_depth: bool = False) -> Tuple[np.ndarray, bytes, str]:
+    """Load various image formats with bit depth preservation option"""
     ext = os.path.splitext(path)[1].lower()
     
     if ext in [".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"]:
@@ -424,10 +701,25 @@ def load_image_bytes(path: str) -> Tuple[np.ndarray, bytes, str]:
         if not DICOM_AVAILABLE:
             raise RuntimeError("pydicom not available for DICOM loading")
         ds = pydicom.dcmread(path)
-        arr = ds.pixel_array.astype(np.float32)
-        # Normalize to 8-bit
-        arr = (255 * (arr - arr.min()) / max(np.ptp(arr), 1)).astype(np.uint8)
-        return arr, arr.tobytes(), f"DICOM {arr.shape[1]}x{arr.shape[0]} → 8-bit"
+        arr = ds.pixel_array
+        
+        if preserve_bit_depth and hasattr(ds, 'BitsStored'):
+            # Preserve original bit depth
+            bit_depth = ds.BitsStored
+            if bit_depth > 8:
+                # Normalize to 16-bit range but keep precision
+                arr = arr.astype(np.uint16)
+                desc = f"DICOM {arr.shape[1]}x{arr.shape[0]} ({bit_depth}-bit preserved)"
+            else:
+                arr = arr.astype(np.uint8)
+                desc = f"DICOM {arr.shape[1]}x{arr.shape[0]} (8-bit)"
+        else:
+            # Normalize to 8-bit for display
+            arr = arr.astype(np.float32)
+            arr = (255 * (arr - arr.min()) / max(np.ptp(arr), 1)).astype(np.uint8)
+            desc = f"DICOM {arr.shape[1]}x{arr.shape[0]} → 8-bit"
+            
+        return arr, arr.tobytes(), desc
     
     # Raw data file
     with open(path, 'rb') as f:
@@ -455,13 +747,13 @@ def gen_gradient(w=512, h=512) -> np.ndarray:
     return gradient
 
 # =============================
-# Main GUI Application
+# UPDATED Main GUI Application
 # =============================
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("DataCoder — Complete Image Compression Benchmark")
+        self.setWindowTitle("DataCoder — Complete Compression Benchmark")
         self.resize(1400, 900)
 
         self.img_arr: Optional[np.ndarray] = None
@@ -488,9 +780,15 @@ class MainWindow(QMainWindow):
             "Gradient 512x512"
         ])
         self.btn_gen = QPushButton("Generate")
+        
+        # Add bit depth preservation option
+        self.chk_preserve_bits = QCheckBox("Preserve DICOM Bit Depth")
+        self.chk_preserve_bits.setChecked(False)
+        
         row1.addWidget(self.btn_load)
         row1.addWidget(self.cmb_generated)
         row1.addWidget(self.btn_gen)
+        row1.addWidget(self.chk_preserve_bits)
         
         self.lbl_info = QLabel("No data loaded")
         self.lbl_info.setStyleSheet("QLabel { padding: 8px; background: #f0f0f0; border: 1px solid #ccc; }")
@@ -533,8 +831,10 @@ class MainWindow(QMainWindow):
         self.btn_run = QPushButton("🚀 Run All Benchmarks")
         self.btn_run.setStyleSheet("QPushButton { font-weight: bold; padding: 8px; }")
         self.btn_save_outputs = QPushButton("💾 Save Compressed Files…")
+        self.btn_validate = QPushButton("✅ Validate Round-Trip")
         ctl_layout.addWidget(self.btn_run)
         ctl_layout.addWidget(self.btn_save_outputs)
+        ctl_layout.addWidget(self.btn_validate)
         ctl_layout.addStretch()
 
         # Results table
@@ -568,8 +868,10 @@ class MainWindow(QMainWindow):
         self.btn_gen.clicked.connect(self.on_generate)
         self.btn_run.clicked.connect(self.on_run)
         self.btn_save_outputs.clicked.connect(self.on_save_outputs)
+        self.btn_validate.clicked.connect(self.on_validate)
 
         self.outputs: Dict[str, bytes] = {}
+        self.validation_results: Dict[str, bool] = {}
         
         # Set algorithm info
         self.update_algorithm_info()
@@ -582,7 +884,7 @@ class MainWindow(QMainWindow):
         <b>Huffman Coding:</b> Variable-length codes based on symbol frequency<br>
         <b>Arithmetic Coding:</b> Encodes entire message as fractional number, higher compression<br>
         <b>CABAC:</b> Context-adaptive binary arithmetic coding, best for correlated data<br>
-        <i>All implementations are real compression algorithms, not simulations</i>
+        <i>All implementations include round-trip validation</i>
         """
         self.txt_info.setHtml(info_text)
 
@@ -638,7 +940,8 @@ class MainWindow(QMainWindow):
             
         self.set_busy(True)
         try:
-            arr, raw, desc = load_image_bytes(path)
+            preserve_bits = self.chk_preserve_bits.isChecked()
+            arr, raw, desc = load_image_bytes(path, preserve_bits)
             self.img_arr, self.img_bytes, self.img_desc = arr, raw, desc
             self.lbl_info.setText(f"📊 Loaded: {os.path.basename(path)} — {desc} — {human_bytes(len(raw))}")
             self.refresh_preview()
@@ -672,9 +975,11 @@ class MainWindow(QMainWindow):
         if name == "RLE":
             compressed = RLEEncoder.encode(data)
         elif name == "Huffman":
-            compressed = Huffman.encode(data)
+            compressed, _ = Huffman.encode(data)
+        
         elif name == "Arithmetic":
-            compressed, _, _ = ArithmeticCoder().encode(data)
+             compressed, _, _ = ArithmeticCoder.encode(data)  # Static call
+        
         elif name == "CABAC":
             compressed, _ = CABAC().encode(data)
         else:
@@ -685,15 +990,57 @@ class MainWindow(QMainWindow):
         
         return time_taken, len(compressed), compressed
 
+    def validate_round_trip(self, name: str, compressed: bytes, original: bytes) -> bool:
+        """Validate that decompression reproduces original data"""
+        try:
+            if name == "RLE":
+                decoded, success = RLEEncoder.decode(compressed)
+            elif name == "Huffman":
+                decoded, success = Huffman.decode(compressed)
+            elif name == "Arithmetic":
+                decoded, success = ArithmeticCoder.decode(compressed)
+            elif name == "CABAC":
+                decoded, success = CABAC.decode(compressed)
+            else:
+                return False
+                
+            return success and decoded == original
+        except Exception:
+            return False
+
     def on_run(self):
         if self.img_bytes is None:
             QMessageBox.information(self, "Run Benchmarks", "Please load or generate data first.")
             return
+        
+        # TEST: Try with simple data first
+        test_data = b"AAAAABBBBBCCCCCDDDDD" * 10  # Simple repetitive data
+        print(f"Testing with {len(test_data)} bytes")
+        
+        # Test Arithmetic Coding
+        compressed, _, _ = ArithmeticCoder.encode(test_data)
+        decoded, success = ArithmeticCoder.decode(compressed)
+        print(f"Arithmetic: Original={len(test_data)}, Compressed={len(compressed)}, Success={success}, Match={decoded == test_data}")
+        
+        if not success or decoded != test_data:
+            print(f"First 20 bytes original: {test_data[:20]}")
+            print(f"First 20 bytes decoded: {decoded[:20] if decoded else b'FAILED'}")
+        
+        # Test CABAC  
+        cabac = CABAC()
+        compressed, _ = cabac.encode(test_data)
+        decoded, success = CABAC.decode(compressed)
+        print(f"CABAC: Original={len(test_data)}, Compressed={len(compressed)}, Success={success}, Match={decoded == test_data}")
+        
+        if not success or decoded != test_data:
+            print(f"First 20 bytes original: {test_data[:20]}")
+            print(f"First 20 bytes decoded: {decoded[:20] if decoded else b'FAILED'}")
             
         self.set_busy(True)
         try:
             original_size = len(self.img_bytes)
             self.outputs.clear()
+            self.validation_results.clear()
             
             algorithms = [
                 ("RLE", RLEEncoder),
@@ -708,21 +1055,46 @@ class MainWindow(QMainWindow):
                 time_taken, compressed_size, compressed_data = self.bench_one(name, encoder, self.img_bytes)
                 self.outputs[name] = compressed_data
                 
+                # Validate round-trip for supported algorithms
+                is_valid = self.validate_round_trip(name, compressed_data, self.img_bytes)
+                self.validation_results[name] = is_valid
+                
+                            # --- ADD THIS BLOCK (debug only) ---
+                if name == "CABAC" and not is_valid:
+                    dec, ok = CABAC.decode(self.outputs["CABAC"])
+                    print("CABAC debug -> ok:", ok,
+                        "decoded_len:", len(dec),
+                        "orig_len:", len(self.img_bytes))
+                    m = min(len(dec), len(self.img_bytes))
+                    for i, (a, b) in enumerate(zip(dec, self.img_bytes)):
+                        if a != b:
+                            print("First mismatch @", i, "decoded:", a, "orig:", b)
+                            s = max(0, i-8); e = min(m, i+16)
+                            print("decoded slice:", dec[s:e])
+                            print("original slice:", self.img_bytes[s:e])
+                            break
+                    if len(dec) != len(self.img_bytes):
+                        print("Length mismatch only.")
+                # --- END DEBUG BLOCK ---
+                
                 compression_ratio = original_size / max(compressed_size, 1)
                 space_saving = (1 - compressed_size / original_size) * 100
+                
+                validation_status = "✅" if is_valid else "❌"
                 
                 results.append([
                     name,
                     f"{time_taken*1000:.2f} ms",
                     human_bytes(compressed_size),
                     f"{compression_ratio:.2f}:1",
-                    f"{space_saving:.1f}%"
+                    f"{space_saving:.1f}%",
+                    validation_status
                 ])
             
             # Populate table
-            self.table.setColumnCount(5)
+            self.table.setColumnCount(6)
             self.table.setRowCount(len(results))
-            self.table.setHorizontalHeaderLabels(["Algorithm", "Time", "Size", "Ratio", "Space Saving"])
+            self.table.setHorizontalHeaderLabels(["Algorithm", "Time", "Size", "Ratio", "Space Saving", "Validation"])
             
             for row, result in enumerate(results):
                 for col, value in enumerate(result):
@@ -730,18 +1102,38 @@ class MainWindow(QMainWindow):
                     
             self.table.resizeColumnsToContents()
             
-            # Show best result
-            best_ratio = max(results, key=lambda x: float(x[3].split(':')[0]))
-            best_algo = best_ratio[0]
-            QMessageBox.information(self, "Benchmark Complete", 
-                                  f"🏆 Best compression: {best_algo}\n"
-                                  f"📊 Ratio: {best_ratio[3]}\n"
-                                  f"💾 Space saved: {best_ratio[4]}")
+            # Show best valid result
+            valid_results = [r for r in results if r[5] == "✅"]
+            if valid_results:
+                best_ratio = max(valid_results, key=lambda x: float(x[3].split(':')[0]))
+                best_algo = best_ratio[0]
+                QMessageBox.information(self, "Benchmark Complete", 
+                                      f"🏆 Best compression: {best_algo}\n"
+                                      f"📊 Ratio: {best_ratio[3]}\n"
+                                      f"💾 Space saved: {best_ratio[4]}")
+            else:
+                QMessageBox.warning(self, "Benchmark Complete", 
+                                  "No algorithms passed validation. Check implementations.")
                                   
         except Exception as e:
             QMessageBox.critical(self, "Benchmark Failed", f"Error during benchmarking:\n{str(e)}")
         finally:
             self.set_busy(False)
+
+    def on_validate(self):
+        """Run comprehensive validation on all algorithms"""
+        if not self.outputs:
+            QMessageBox.information(self, "Validate", "Please run benchmarks first.")
+            return
+            
+        validation_report = ["Round-Trip Validation Results:"]
+        
+        for name, compressed in self.outputs.items():
+            is_valid = self.validate_round_trip(name, compressed, self.img_bytes)
+            status = "✅ PASS" if is_valid else "❌ FAIL"
+            validation_report.append(f"{name}: {status}")
+            
+        QMessageBox.information(self, "Validation Results", "\n".join(validation_report))
 
     def on_save_outputs(self):
         if not self.outputs:
