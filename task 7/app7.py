@@ -62,7 +62,6 @@ class OptimizedCABAC:
     def initialize_context_models(self):
         """Initialize context models based on content type - FINAL OPTIMIZED"""
         if self.content_type == "screen_recording":
-            # FINAL OPTIMIZED: Balanced initial state for screen content
             self.context_models = {i: ContextModel(state=40, mps=0) for i in range(128)}
         elif self.content_type == "surveillance":
             self.context_models = {i: ContextModel(state=48, mps=0) for i in range(128)}
@@ -82,7 +81,7 @@ class OptimizedCABAC:
             ctx = ctx % len(self.context_models)
             
         elif self.content_type == "surveillance":
-            # OPTIMAL: Color-aware surveillance context modeling
+            # Color-aware surveillance context modeling
             x, y = position
             
             # Base spatial context with finer granularity for complex scenes
@@ -245,7 +244,6 @@ class EnhancedCABAC(OptimizedCABAC):
             # Emergency break if stuck in renormalization
             if iterations >= max_renorm_iterations:
                 print(f"⚠️  Renormalization stuck after {max_renorm_iterations} iterations at bin {i}")
-                # Output pending bits and reset
                 if pending_bits > 0:
                     if low < 0x40000000:
                         bits_out.append('0')
@@ -306,7 +304,6 @@ class VideoFrameProcessor:
         # Get frame dimensions
         height, width = residuals.shape
         
-        # ⚡ PROCESS ONLY EVERY 4th PIXEL for speed (process 1/16th of pixels)
         skip_factor = 4
         
         for y in range(0, height, skip_factor):
@@ -376,14 +373,11 @@ class DualModeCABACAnalyzer:
             print(f"📷 Processing frame {frame_idx + 1}/{frame_count}")
             frame_start = time.time()
             
-            # OPTIMAL: Process color channels separately for better results
             if len(frame.shape) == 3:
-                # Convert to YUV and process luminance channel (most important)
                 frame_yuv = cv2.cvtColor(frame, cv2.COLOR_BGR2YUV)
-                frame = frame_yuv[:,:,0]  # Use Y (luminance) channel only
+                frame = frame_yuv[:,:,0] 
                 print("   🎨 Processing luminance channel (Y) from YUV color space")
             
-            # Continue with existing processing...
             residual_start = time.time()
             residuals = VideoFrameProcessor.extract_residuals(frame, prev_frame)
             residual_time = time.time() - residual_start
@@ -396,7 +390,6 @@ class DualModeCABACAnalyzer:
             
             prev_frame = frame
             
-            # Test each CABAC variant on this frame
             frame_result = {'frame_idx': frame_idx, 'video_path': video_path, 'detected_type': content_type}
             
             for ctype, encoder in cabac_encoders.items():
@@ -537,7 +530,6 @@ class DualModeCABACAnalyzer:
     def generate_surveillance_content_data(self) -> List[int]:
         """Generate data mimicking surveillance footage"""
         np.random.seed(42)
-        # More random, complex patterns
         return [np.random.randint(0, 2) for _ in range(1000)]
     
     def generate_animation_content_data(self) -> List[int]:
@@ -592,15 +584,12 @@ class DualModeCABACAnalyzer:
     def save_real_video_results(self, video_path: str, content_type: str, frame_results: List):
         """Save real video analysis results with proper error handling"""
         try:
-            # Create a safe filename
             base_name = os.path.basename(video_path).split('.')[0]
             safe_base_name = "".join(c for c in base_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
             csv_filename = f"real_analysis_{safe_base_name}_{content_type}.csv"
             
-            # Try current directory first, then fallback to user's documents folder
             save_path = csv_filename
             
-            # If permission denied in current directory, try user's documents folder
             try:
                 with open(save_path, 'w', newline='') as f:
                     writer = csv.writer(f)
@@ -626,7 +615,6 @@ class DualModeCABACAnalyzer:
                 print(f"💾 Real video results saved to: {save_path}")
                 
             except PermissionError:
-                # Fallback to user's documents folder
                 documents_path = os.path.expanduser("~/Documents")
                 save_path = os.path.join(documents_path, csv_filename)
                 
@@ -914,7 +902,6 @@ class CABACVisualizer:
         ax1.legend()
         ax1.grid(True, linestyle='--', alpha=0.7)
         
-        # Chart 2: LPS rates over frames
         for ctype in content_types:
             lps_rates = []
             for fr in frame_results:
@@ -985,7 +972,6 @@ def main():
                 visualizer.create_adaptation_speed_chart(analyzer.results)
                 visualizer.create_performance_comparison_chart(analyzer.results)
                 
-                # Check if we have frame results for detailed analysis
                 for key, result in analyzer.results.items():
                     if 'frame_results' in result and result['frame_results']:
                         visualizer.create_detailed_frame_analysis(result['frame_results'])
@@ -1118,10 +1104,8 @@ def analyze_with_chosen_algorithm():
     
     print(f"\n🚀 Analyzing with {chosen_algo} CABAC...")
     
-    # Run analysis with just the chosen algorithm vs generic
     analyzer = DualModeCABACAnalyzer()
     
-    # We'll modify this to compare chosen vs generic only
     cap = cv2.VideoCapture(video_path)
     frame_count = min(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), frames)
     
