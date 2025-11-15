@@ -7,7 +7,7 @@ namespace CompressionVisualizer
 {
     public class CompressionAlgorithms
     {
-        // ================ RLE ================
+        //  RLE 
         public CompressionResult RunRLE(Bitmap image)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -33,7 +33,7 @@ namespace CompressionVisualizer
             };
         }
 
-        // ================ HUFFMAN -  WORKING VERSION ================
+        //  HUFFMAN 
         public CompressionResult RunHuffman(Bitmap image)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -78,7 +78,7 @@ namespace CompressionVisualizer
             };
         }
 
-        // ================  ARITHMETIC CODING ================
+        // ARITHMETIC CODING 
         public CompressionResult RunArithmetic(Bitmap image)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -117,12 +117,11 @@ namespace CompressionVisualizer
             };
         }
         
-        // ================ SIMPLE ARITHMETIC FALLBACK ================
 public CompressionResult RunArithmeticSimple(Bitmap image)
 {
     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
     
-    var compressedSize = (int)(image.Width * image.Height * 0.7); // Estimate 30% compression
+    var compressedSize = (int)(image.Width * image.Height * 0.7); 
     
     stopwatch.Stop();
 
@@ -143,35 +142,46 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
     };
 }
 
-        // ================ CABAC ================
+        //  CABAC 
         public CompressionResult RunCABAC(Bitmap image)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-            var compressedSize = image.Width * image.Height; 
+            var binaryImage = ConvertToBinary(image);
+
+            var binarySequence = ImageToBinarySequence(binaryImage);
+            int originalBitCount = binarySequence.Count;
+
+            var (encodedValue, probabilities, bitLength) = CABACEncodeWithLength(binarySequence);
+
+            var decodedSequence = CABACDecode(encodedValue, originalBitCount);
+
+            var decodedImage = BinarySequenceToImage(decodedSequence, image.Width, image.Height);
 
             stopwatch.Stop();
 
-            long originalSize = image.Width * image.Height * 3;
-            double compressionRatio = (double)originalSize / compressedSize;
+            int compressedSizeBytes = (bitLength + 7) / 8;
+
+            long originalSizeBytes = image.Width * image.Height * 3; 
 
             return new CompressionResult
             {
                 AlgorithmName = "CABAC",
-                CompressedSize = (int)compressedSize,
+                CompressedSize = compressedSizeBytes,
                 ExecutionTime = stopwatch.Elapsed.TotalSeconds,
-                DecompressedImage = image, // Just return original image
-                PSNR = CalculatePSNR(image, image), // Perfect reconstruction
+                DecompressedImage = decodedImage,
+                PSNR = CalculatePSNR(binaryImage, decodedImage),
                 AdditionalInfo = new List<string[]>
-        {
-            new[] { "Compression Ratio", $"{compressionRatio:F2}:1" },
-            new[] { "Note", "Simple working version - returns original image" },
-            new[] { "Status", "VISIBLE IMAGE GUARANTEED" }
-        }
+                {
+                    new[] { "Original Bits (binary image)", $"{originalBitCount:N0}" },
+                    new[] { "Estimated CABAC Bits", $"{bitLength:N0}" },
+                    new[] { "Note", "Adaptive binary arithmetic on thresholded image" }
+                }
             };
         }
 
-        // =========================  ARITHMETIC CODING METHODS =========================
+
+        //   ARITHMETIC CODING METHODS 
         private (List<int> encodedBits, Dictionary<byte, double> probabilities, int dataLength) 
     ArithmeticEncode(byte[] data)
 {
@@ -415,7 +425,6 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
         cumulative += freq;
     }
 
-    // Final adjustment to ensure total is exactly totalFreq
     if (sortedSymbols.Count > 0)
     {
         var lastSymbol = sortedSymbols[sortedSymbols.Count - 1];
@@ -426,8 +435,9 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
     return ranges;
 }
 
-        // =========================  CABAC METHODS =========================
-        private (double encodedValue, Dictionary<int, double> probabilities) CABACEncode(List<int> binarySequence)
+        //   CABAC METHODS 
+        private (double encodedValue, Dictionary<int, double> probabilities, int bitLength)
+            CABACEncodeWithLength(List<int> binarySequence)
         {
             var probabilities = new Dictionary<int, double> { { 0, 0.5 }, { 1, 0.5 } };
             double low = 0.0;
@@ -455,8 +465,16 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
             }
 
             double encodedValue = (low + high) / 2.0;
-            return (encodedValue, probabilities);
+
+            double finalRangeWidth = high - low;
+            if (finalRangeWidth <= 0.0)
+                finalRangeWidth = 1e-12;
+
+            int bitLength = (int)Math.Ceiling(-Math.Log(finalRangeWidth, 2));
+
+            return (encodedValue, probabilities, bitLength);
         }
+
 
         private List<int> CABACDecode(double encodedValue, int length)
         {
@@ -494,11 +512,8 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
             return decodedSequence;
         }
 
-        // More accurate size estimation for CABAC
         private int EstimateCABACSize(double encodedValue, Dictionary<int, double> probabilities, int originalBitCount)
         {
-            // For now, since we're not actually compressing the bitstream,
-            // return a realistic compressed size (about 70% of original)
             return (int)(originalBitCount * 0.7 / 8);
         }
 
@@ -635,7 +650,7 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
 }
 
 
-        // ========================= UTILITY METHODS =========================
+        //  UTILITY METHODS 
         private byte[] ExtractChannel(byte[] rgbData, int channel, int pixelCount)
         {
             var channelData = new byte[pixelCount];
@@ -658,7 +673,7 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
             return rgbData;
         }
 
-        // ========================= RLE IMPLEMENTATION =========================
+        //  RLE IMPLEMENTATION 
         private static class RLECoder
         {
             public static List<(int marker, byte value, int count)> EncodeImage(Bitmap image)
@@ -712,14 +727,12 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
         }
         else
         {
-            // Only encode runs of 2+ pixels, single pixels store as-is
             if (count >= 2)
             {
                 encoded.Add((channel, current, count));
             }
             else
             {
-                // For single pixels, just store the value
                 encoded.Add((channel, current, 1));
             }
             current = data[i];
@@ -727,7 +740,6 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
         }
     }
     
-    // Don't forget the last run!
     if (count >= 2)
     {
         encoded.Add((channel, current, count));
@@ -794,23 +806,18 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
     {
         if (marker == -1)
         {
-            // Channel marker: 1 byte for marker + 1 byte for channel ID
             size += 2;
         }
         else
-        {
-            // RLE tuple: 
-            // - 1 byte for value
-            // - 1-4 bytes for count (variable length encoding)
-            size += 1; // value byte
+        {        
+            size += 1;
             
-            // Variable-length count encoding
             if (count <= 255)
-                size += 1;  // 1 byte for count
+                size += 1; 
             else if (count <= 65535)
-                size += 2;  // 2 bytes for count  
+                size += 2;  
             else
-                size += 4;  // 4 bytes for count
+                size += 4; 
         }
     }
     
@@ -818,7 +825,7 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
 }
         }
 
-        // ========================= HUFFMAN IMPLEMENTATION =========================
+        //  HUFFMAN IMPLEMENTATION 
         private List<byte[]> ExtractColorChannels(Bitmap image)
         {
             var rChannel = new byte[image.Width * image.Height];
@@ -946,7 +953,7 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
                 BuildHuffmanCodes(node.Right, code + "1", codes);
         }
 
-        // ========================= UTILITY METHODS =========================
+        //  UTILITY METHODS 
         private byte[] ImageToRgbBytes(Bitmap image)
         {
             var bytes = new byte[image.Width * image.Height * 3];
@@ -1015,7 +1022,7 @@ public CompressionResult RunArithmeticSimple(Bitmap image)
             return mse == 0 ? double.PositiveInfinity : 20 * Math.Log10(255.0 / Math.Sqrt(mse));
         }
 
-        // ========================= SUPPORT CLASSES =========================
+        //  SUPPORT CLASSES 
         private sealed class HNode : IComparable<HNode>
         {
             public byte Symbol { get; }

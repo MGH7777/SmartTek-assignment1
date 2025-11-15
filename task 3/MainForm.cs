@@ -45,7 +45,7 @@ namespace CompressionVisualizer
             originalPictureBox = new PictureBox();
             compressedPictureBox = new PictureBox();
             resultsListView = new ListView();
-            comparisonListView = new ListView(); // ✅ initialize
+            comparisonListView = new ListView();
             statusLabel = new Label();
             progressBar = new ProgressBar();
             tabControl = new TabControl();

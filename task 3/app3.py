@@ -6,13 +6,13 @@ from PIL import Image
 import time
 import os
 import heapq
+import math
 from collections import Counter, defaultdict
 from decimal import Decimal, getcontext
 from typing import List, Tuple, Dict, Union
 
-# =============================================================================
+
 # COMPRESSION ALGORITHMS IMPLEMENTATION
-# =============================================================================
 
 class RLECoder:
     """Run-Length Encoding implementation"""
@@ -55,13 +55,13 @@ class RLECoder:
                 encoded_data.append((-1, channel))  # Channel separator
                 encoded_data.extend(encoded_channel)
             return encoded_data
-        elif image.ndim == 2:  # Grayscale
+        elif image.ndim == 2:  
             encoded_rows = []
             for row in image:
                 encoded_row = RLECoder.encode(row.tolist())
                 encoded_rows.extend(encoded_row)
             return encoded_rows
-        else:  # 1D data
+        else:  
             return RLECoder.encode(image.flatten().tolist())
     
     @staticmethod
@@ -74,20 +74,17 @@ class RLECoder:
             channel_data = []
             
             for value, count in encoded_data:
-                if value == -1:  # Channel separator
-                    # Decode previous channel if exists
+                if value == -1:  
                     if channel_data:
                         flat_decoded = RLECoder.decode(channel_data)
-                        # Reshape to channel
                         if len(flat_decoded) >= height * width:
                             channel_2d = flat_decoded[:height*width].reshape(height, width)
                             decoded_image[:, :, current_channel] = channel_2d
-                        current_channel = count  # Next channel
+                        current_channel = count  
                         channel_data = []
                 else:
                     channel_data.append((value, count))
             
-            # Decode last channel
             if channel_data and current_channel < channels:
                 flat_decoded = RLECoder.decode(channel_data)
                 if len(flat_decoded) >= height * width:
@@ -96,12 +93,11 @@ class RLECoder:
             
             return decoded_image
             
-        elif len(original_shape) == 2:  # Grayscale
+        elif len(original_shape) == 2:  
             height, width = original_shape
             decoded_image = np.zeros((height, width), dtype=np.uint8)
             flat_decoded = RLECoder.decode(encoded_data)
             
-            # Reconstruct row by row
             for i in range(height):
                 start_idx = i * width
                 end_idx = start_idx + width
@@ -113,7 +109,6 @@ class RLECoder:
     
     @staticmethod
     def calculate_compressed_size(encoded_data: List[Tuple]) -> int:
-        # Each tuple (value, count) takes 2 units of storage
         return len(encoded_data) * 2
 
 class HuffmanNode:
@@ -211,7 +206,6 @@ class ArithmeticCoder:
         frequency = dict(Counter(flattened))
         probabilities = {}
         
-        # Use integer frequencies instead of floating point
         for symbol in sorted(frequency.keys()):
             probabilities[symbol] = frequency[symbol] / total
         return probabilities
@@ -219,17 +213,16 @@ class ArithmeticCoder:
     def build_cumulative_frequencies(self, probabilities: Dict) -> Tuple[Dict, int]:
         cumulative = 0
         ranges = {}
-        total_freq = 1000000  # Large fixed total to avoid floating point
+        total_freq = 1000000  
         
         sorted_symbols = sorted(probabilities.keys())
         for symbol in sorted_symbols:
             freq = int(probabilities[symbol] * total_freq)
             if freq == 0: 
-                freq = 1  # Ensure every symbol has at least 1 frequency
+                freq = 1  
             ranges[symbol] = (cumulative, cumulative + freq)
             cumulative += freq
         
-        # Normalize to exact total
         if cumulative != total_freq:
             last_symbol = sorted_symbols[-1]
             low, high = ranges[last_symbol]
@@ -258,11 +251,9 @@ class ArithmeticCoder:
             range_width = high - low + 1
             sym_low, sym_high = ranges[symbol]
             
-            # Update bounds using integer arithmetic
             high = low + (range_width * sym_high) // total_freq - 1
             low = low + (range_width * sym_low) // total_freq
             
-            # Bit output
             while True:
                 if high < self.half_range:
                     encoded_bits.append(0)
@@ -283,7 +274,6 @@ class ArithmeticCoder:
                 else:
                     break
         
-        # Final bits
         pending_bits += 1
         if low < self.quarter_range:
             encoded_bits.append(0)
@@ -301,7 +291,6 @@ class ArithmeticCoder:
         ranges, total_freq = self.build_cumulative_frequencies(probabilities)
         decoded_data = []
         
-        # Initialize decoder state
         value = 0
         for i in range(min(self.precision_bits, len(encoded_bits))):
             value = (value << 1) | encoded_bits[i]
@@ -326,12 +315,10 @@ class ArithmeticCoder:
             
             decoded_data.append(symbol_found)
             
-            # Update bounds
             sym_low, sym_high = ranges[symbol_found]
             high = low + (range_width * sym_high) // total_freq - 1
             low = low + (range_width * sym_low) // total_freq
             
-            # Scale range
             while True:
                 if high < self.half_range:
                     low <<= 1
@@ -380,7 +367,7 @@ class CABACCoder:
         self.probabilities[0] = new_prob_0
         self.probabilities[1] = 1.0 - new_prob_0
     
-    def encode_binary_sequence(self, binary_sequence: List[int]) -> Tuple[float, Dict]:
+    def encode_binary_sequence(self, binary_sequence: List[int]) -> Tuple[float, Dict, int]:
         low = 0.0
         high = 1.0
         self.reset_probs()
@@ -397,7 +384,13 @@ class CABACCoder:
             self.update_probability(symbol)
         
         encoded_value = (low + high) / 2.0
-        return encoded_value, self.probabilities.copy()
+
+        range_width = high - low
+        if range_width <= 0.0:
+            range_width = 1e-12
+        bit_length = int(math.ceil(-math.log2(range_width)))
+
+        return encoded_value, self.probabilities.copy(), bit_length
     
     def decode_binary_sequence(self, encoded_value: float, length: int) -> List[int]:
         low = 0.0
@@ -441,22 +434,21 @@ class CABACCoder:
                 data.append(byte_value)
         return np.array(data, dtype=np.uint8)
     
-    def encode_image(self, image: np.ndarray) -> Tuple[float, Dict]:
+    def encode_image(self, image: np.ndarray) -> Tuple[float, Dict, int]:
         binary_sequence = self.convert_to_binary(image)
         return self.encode_binary_sequence(binary_sequence)
     
     def decode_image(self, encoded_value: float, probabilities: Dict, original_shape: Tuple) -> np.ndarray:
-        total_pixels = np.prod(original_shape)
-        binary_length = total_pixels * 8
+        total_elements = int(np.prod(original_shape))
+        binary_length = total_elements * 8
         
         binary_sequence = self.decode_binary_sequence(encoded_value, binary_length)
         decoded = self.convert_from_binary(binary_sequence)
         
         return decoded.reshape(original_shape)
 
-# =============================================================================
+
 # UTILITY FUNCTIONS
-# =============================================================================
 
 def load_image(file_path: str) -> np.ndarray:
     """Load image and convert to numpy array"""
@@ -475,15 +467,12 @@ def calculate_space_saving(original_size: int, compressed_size: int) -> float:
 def calculate_psnr(original: np.ndarray, reconstructed: np.ndarray) -> float:
     """Calculate PSNR with better error handling"""
     try:
-        # Ensure both arrays have the same shape and type
         if original.shape != reconstructed.shape:
-            # Try to reshape if total elements match
             if original.size == reconstructed.size:
                 reconstructed = reconstructed.reshape(original.shape)
             else:
                 return 0.0
         
-        # Convert to float for calculation
         original_float = original.astype(np.float64)
         reconstructed_float = reconstructed.astype(np.float64)
         
@@ -492,7 +481,6 @@ def calculate_psnr(original: np.ndarray, reconstructed: np.ndarray) -> float:
         if mse == 0:
             return float('inf')
         
-        # For uint8 images, max value is 255
         max_pixel = 255.0
         psnr = 20 * np.log10(max_pixel / np.sqrt(mse))
         return psnr
@@ -501,9 +489,7 @@ def calculate_psnr(original: np.ndarray, reconstructed: np.ndarray) -> float:
         print(f"PSNR calculation error: {e}")
         return 0.0
 
-# =============================================================================
 # STREAMLIT WEB APPLICATION
-# =============================================================================
 
 def main():
     st.set_page_config(
@@ -520,7 +506,6 @@ def main():
     Compare and visualize different compression algorithms with performance measurements.
     """)
     
-    # Initialize algorithms
     algorithms = {
         "RLE": RLECoder(),
         "Huffman": HuffmanCoder(),
@@ -654,20 +639,22 @@ def run_single_algorithm(image: np.ndarray, algorithm, algorithm_name: str):
                 psnr = calculate_psnr(image, decoded_image)
 
         elif algorithm_name == "CABAC":
-            st.info("CABAC - Processing full image in binary form")
+            st.info("CABAC - Processing full image in bit-plane form (8 bits per pixel)")
             
-            # Convert entire image to binary
-            binary_image = (image > 128).astype(np.uint8) * 255
-            binary_sequence = binary_image.flatten().tolist()
+            # End-to-end CABAC using the helper methods
+            encoded_value, probabilities, bit_length = algorithm.encode_image(image)
+            compressed_size = (bit_length + 7) // 8  # bits → bytes
             
-            # Actual CABAC processing on FULL image
-            encoded_value, probabilities = algorithm.encode_binary_sequence(binary_sequence)
-            
-            # Real compressed size estimate
-            compressed_size = len(binary_sequence) / 8  # This will be ~131KB for binary image
-            
-            decoded_image = binary_image
+            decoded_image = algorithm.decode_image(encoded_value, probabilities, decode_shape)
             decoded_image = decoded_image.astype(np.uint8)
+            
+            # Verify lossless reconstruction
+            if np.array_equal(image.flatten(), decoded_image.flatten()):
+                st.success("✅ Perfect lossless reconstruction achieved with CABAC!")
+            else:
+                differences = np.sum(image.flatten() != decoded_image.flatten())
+                st.warning(f"❌ Reconstruction mismatch in {differences} pixels")
+
         
         end_time = time.time()
         execution_time = end_time - start_time
@@ -684,12 +671,8 @@ def run_single_algorithm(image: np.ndarray, algorithm, algorithm_name: str):
     compression_ratio = calculate_compression_ratio(original_size, compressed_size)
     space_saving = calculate_space_saving(original_size, compressed_size)
    
-    # For CABAC only - compare to binary version for accurate PSNR
-    if algorithm_name == "CABAC":
-        binary_reference = (image > 128).astype(np.uint8) * 255
-        psnr = calculate_psnr(binary_reference, decoded_image)
-    else:
-        psnr = calculate_psnr(image, decoded_image)
+    psnr = calculate_psnr(image, decoded_image)
+
     
     metrics_df = pd.DataFrame({
         'Metric': ['Original Size', 'Compressed Size', 'Compression Ratio', 
@@ -852,18 +835,11 @@ def run_comparison(image: np.ndarray, algorithms: Dict):
                     decoded_image = decoded_image.astype(np.uint8)
 
             elif algo_name == "CABAC":
-                # Create binary version for visualization
-                binary_image = (image > 128).astype(np.uint8) * 255
-                binary_sequence = binary_image.flatten().tolist()
-                
-                # Actual CABAC processing on FULL image
-                encoded_value, probabilities = algorithm.encode_binary_sequence(binary_sequence)
-                
-                # Real compressed size estimate
-                compressed_size = len(binary_sequence) / 8
-                
-                decoded_image = binary_image
+                encoded_value, probabilities, bit_length = algorithm.encode_image(image)
+                compressed_size = (bit_length + 7) // 8
+                decoded_image = algorithm.decode_image(encoded_value, probabilities, decode_shape)
                 decoded_image = decoded_image.astype(np.uint8)
+
                                     
             end_time = time.time()
             execution_time = end_time - start_time
@@ -873,28 +849,15 @@ def run_comparison(image: np.ndarray, algorithms: Dict):
             space_saving = calculate_space_saving(original_size, compressed_size)
 
             try:
-                if algo_name == "CABAC":
-                    # For CABAC, we need to ensure the decoded image is the same type as reference
-                    binary_reference = (image > 128).astype(np.uint8) * 255
-                    # Make sure decoded_image is the same shape and type
-                    if decoded_image.shape != binary_reference.shape:
-                        # Reshape if necessary
-                        decoded_image = decoded_image.reshape(binary_reference.shape)
-                    psnr = calculate_psnr(binary_reference, decoded_image)
-                else:
-                    # For other algorithms, compare with original image
-                    # Ensure both images have the same shape and data type
-                    if decoded_image.shape != image.shape:
-                        decoded_image = decoded_image.reshape(image.shape)
-                    if decoded_image.dtype != image.dtype:
-                        decoded_image = decoded_image.astype(image.dtype)
-                    psnr = calculate_psnr(image, decoded_image)
+                # Ensure both images have the same shape and dtype
+                if decoded_image.shape != image.shape:
+                    decoded_image = decoded_image.reshape(image.shape)
+                if decoded_image.dtype != image.dtype:
+                    decoded_image = decoded_image.astype(image.dtype)
                 
-                # Handle infinite PSNR (perfect reconstruction)
-                if psnr == float('inf'):
-                    psnr_value = float('inf')
-                else:
-                    psnr_value = psnr
+                psnr = calculate_psnr(image, decoded_image)
+                psnr_value = float('inf') if psnr == float('inf') else psnr
+
                     
             except Exception as e:
                 st.warning(f"PSNR calculation failed for {algo_name}: {str(e)}")
@@ -939,7 +902,6 @@ def run_comparison(image: np.ndarray, algorithms: Dict):
     # Create visualizations with matplotlib
     st.subheader("Performance Visualizations")
     
-    # Filter valid results for plotting
     valid_results = [r for r in results if isinstance(r['Compression Ratio'], (int, float))]
     
     if valid_results:
@@ -975,11 +937,10 @@ def run_comparison(image: np.ndarray, algorithms: Dict):
             
         with col4:
             fig4, ax4 = plt.subplots(figsize=(8, 6))
-            # Handle infinite PSNR values
             psnr_values = []
             for val in comp_df['PSNR (dB)']:
                 if val == float('inf'):
-                    psnr_values.append(100)  # Represent infinity as 100 for visualization
+                    psnr_values.append(100)  
                 else:
                     psnr_values.append(val)
             
