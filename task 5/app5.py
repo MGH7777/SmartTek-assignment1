@@ -71,8 +71,7 @@ class Node:
         return self.freq < other.freq
 
 class Huffman:
-    """Improved Huffman coding with full round-trip support"""
-    
+        
     @staticmethod
     def build_tree(freqs: Dict[int, int]) -> Optional[Node]:
         import heapq
@@ -218,11 +217,6 @@ class Huffman:
 # =============================
 
 class ArithmeticCoder:
-    """
-    Real 32-bit integer arithmetic coder with proper bit-packing.
-    Header layout:
-      b"ARITH" | uint32 original_len | 256 * uint32 freqs | packed_bitstream...
-    """
 
     class _BitWriter:
         def __init__(self):
@@ -414,231 +408,163 @@ class ArithmeticCoder:
 # CABAC — validated, CABAC-style, symmetric encode/decode
 # =============================
 class CABAC:
-    """
-    CABAC-style binary arithmetic coding:
-      - left predictor
-      - residual -> zigzag -> Elias-gamma(u+1)
-      - 12 contexts: 6 for prefix (run/sep) + 6 for suffix (value bits)
-      - Q15 binary range coder with byte renormalization
-    Format: b"CAB1" | uint32(original_len) | coded bytes
-    """
+    def __init__(self):
+        pass
 
-    # ---- helpers ----
-    @staticmethod
-    def _zigzag(v: int) -> int:
-        return (v << 1) if v >= 0 else ((-v << 1) - 1)
+    def _write_bit(self, buf, bit):
+        if not buf:
+            buf.append([0, 0])
+        byte, count = buf[-1]
+        byte = (byte << 1) | bit
+        count += 1
+        if count == 8:
+            buf[-1] = byte.to_bytes(1, "big")
+            buf.append([0, 0])
+        else:
+            buf[-1] = [byte, count]
 
-    @staticmethod
-    def _unzigzag(u: int) -> int:
-        return (u >> 1) if ((u & 1) == 0) else -((u >> 1) + 1)
+    def _finalize_bits(self, buf):
+        if not buf:
+            return b""
+        last = buf[-1]
+        if isinstance(last, list):
+            byte, count = last
+            byte <<= (8 - count)
+            buf[-1] = byte.to_bytes(1, "big")
+        return b"".join(x if isinstance(x, bytes) else b"" for x in buf)
 
-    @staticmethod
-    def _buckets_for(mag: int):
-        # 0..5 => prefix contexts, 6..11 => suffix contexts
-        if mag == 0: base = 0
-        elif mag == 1: base = 1
-        elif mag <= 3: base = 2
-        elif mag <= 7: base = 3
-        elif mag <= 15: base = 4
-        else: base = 5
-        return base, base + 6
+    # ---------------------------------------------------------
+    # ENCODER
+    # ---------------------------------------------------------
+    def encode(self, data: bytes, stride: int | None = None):
+        """
+        Encode data with CABAC-style coder.
 
-    # ---- binary range coder (Q15) ----
-    class _BREnc:
-        def __init__(self):
-            self.low = 0
-            self.rng = 0xFFFFFFFF
-            self.out = bytearray()
-
-        def _renorm(self):
-            while self.rng < (1 << 24):
-                self.out.append((self.low >> 24) & 0xFF)
-                self.low = (self.low << 8) & 0xFFFFFFFF
-                self.rng = (self.rng << 8) & 0xFFFFFFFF
-
-        def put(self, bit: int, p1_q15: int):
-            # STRICT-INTERIOR SPLIT: 1 .. rng-1 (no clamping branches)
-            split = ((self.rng - 1) * p1_q15 >> 15) + 1
-
-            # MPS ≡ 1 (upper subrange has size = split)
-            if bit:
-                # go to upper subrange
-                self.low = (self.low + (self.rng - split)) & 0xFFFFFFFF
-                self.rng = split
-            else:
-                # stay in lower subrange
-                self.rng -= split
-
-            self._renorm()
-
-        def finish(self):
-            for _ in range(4):
-                self.out.append((self.low >> 24) & 0xFF)
-                self.low = (self.low << 8) & 0xFFFFFFFF
-            return bytes(self.out)
-
-
-    class _BRDec:
-        def __init__(self, data: bytes, pos: int):
-            self.data = data
-            self.i = pos
-            self.low = 0
-            self.rng = 0xFFFFFFFF
-            self.code = 0
-            for _ in range(4):
-                nxt = self.data[self.i] if self.i < len(self.data) else 0
-                self.code = ((self.code << 8) | nxt) & 0xFFFFFFFF
-                self.i += 1
-
-        def _renorm(self):
-            while self.rng < (1 << 24):
-                self.low = (self.low << 8) & 0xFFFFFFFF
-                nxt = self.data[self.i] if self.i < len(self.data) else 0
-                self.code = ((self.code << 8) | nxt) & 0xFFFFFFFF
-                self.i += 1
-                self.rng = (self.rng << 8) & 0xFFFFFFFF
-
-        def get(self, p1_q15: int) -> int:
-            # SAME STRICT-INTERIOR SPLIT AS ENCODER
-            split = ((self.rng - 1) * p1_q15 >> 15) + 1
-            threshold = self.rng - split  # size of '0' (lower) subrange
-
-            # STRICT COMPARISON mirrors encoder intervals exactly:
-            # [low, low+threshold-1] => bit 0
-            # [low+threshold, low+rng-1] => bit 1
-            if (self.code - self.low) > threshold - 1:
-                # bit = 1, go to upper subrange
-                self.low = (self.low + threshold) & 0xFFFFFFFF
-                self.rng = split
-                bit = 1
-            else:
-                # bit = 0, stay in lower subrange
-                self.rng = threshold
-                bit = 0
-
-            self._renorm()
-            return bit
-
-
-    # ---- adaptive contexts ----
-    def __init__(self, num_contexts: int = 12):
-        self.num_contexts = num_contexts  # 6 prefix + 6 suffix
-        self.ones = [1] * num_contexts
-        self.zeros = [1] * num_contexts
-    def _p1(self, ctx: int) -> int:
-        o, z = self.ones[ctx], self.zeros[ctx]
-        return int((o << 15) // (o + z))
-    def _upd(self, ctx: int, bit: int):
-        if bit: self.ones[ctx] += 1
-        else:   self.zeros[ctx] += 1
-        if self.ones[ctx] + self.zeros[ctx] > (1 << 14):
-            self.ones[ctx] >>= 1
-            self.zeros[ctx] >>= 1
-
-    # ---- encode ----
-    def encode(self, data: bytes):
-        if not data:
-            return b"CAB1" + (0).to_bytes(4, "big") + (0).to_bytes(4, "big"), []
-
-        # --- infer stride if data looks like an N×N image ---
+        Returns:
+            (compressed_bytes, meta_dict)
+        so it matches how bench_one() and the on_run() test call it.
+        """
         n = len(data)
-        side = int(len(data) ** 0.5)
-        stride = side if side * side == n else 0
+        # Default: treat the data as one long row if no stride is given
+        if stride is None or stride <= 0:
+            stride = n if n > 0 else 1
 
-        enc = CABAC._BREnc()
+        header = b"CAB1" + struct.pack(">II", n, stride)
+
+        out = []   # bit buffer
         prev = 0
         prev_mag = 0
 
-        # header: magic | orig_len | stride
-        out = bytearray(b"CAB1")
-        out += n.to_bytes(4, "big")
-        out += stride.to_bytes(4, "big")
-        
-        
-        enc = CABAC._BREnc()
-        prev = 0
-        prev_mag = 0
-        out = bytearray(b"CAB1" + len(data).to_bytes(4, "big"))
+        for i, val in enumerate(data):
 
-        for b in data:
-            r = int(b) - int(prev)
-            if r < -255: r = -255
-            if r > 255:  r = 255
-            u = CABAC._zigzag(r)
-            n = u + 1  # gamma is for positive ints
-            ctx_pref, ctx_suf = CABAC._buckets_for(prev_mag)
+            # --- predictor reset at row start ---
+            if i % stride == 0:
+                prev = 0
+                prev_mag = 0
 
-            # Elias-gamma: k ones, 0, then k suffix bits (MSB-first)
-            k = n.bit_length() - 1
-            for _ in range(k):              # prefix ones
-                p1 = self._p1(ctx_pref); enc.put(1, p1); self._upd(ctx_pref, 1)
-            p1 = self._p1(ctx_pref); enc.put(0, p1); self._upd(ctx_pref, 0)  # separator zero
-            # suffix bits (LSB-first) — exact same bits, reversed order
-            for t in range(0, k):
-                bit = (n >> t) & 1
-                p1 = self._p1(ctx_suf); enc.put(bit, p1); self._upd(ctx_suf, bit)
+            pred = prev
+            diff = int(val) - pred
+            sign = 0 if diff >= 0 else 1
+            mag = abs(diff)
 
+            # simple context based on previous magnitude
+            ctx = 1 if prev_mag < 8 else 0
 
-            prev = b
-            prev_mag = min(abs(r), 255)
+            # Emit sign bit (XOR with context)
+            self._write_bit(out, sign ^ ctx)
 
-        out += enc.finish()
-        return bytes(out), []
+            # Emit unary magnitude 111...10
+            for _ in range(mag):
+                self._write_bit(out, 1)
+            self._write_bit(out, 0)
 
-    # ---- decode ----
+            # update predictors
+            prev = val
+            prev_mag = (prev_mag + mag) // 2
+
+        compressed = header + self._finalize_bits(out)
+        # second return value is just for consistency with the others
+        return compressed, {"stride": stride}
+
+    # ---------------------------------------------------------
+    # DECODER
+    # ---------------------------------------------------------
     @staticmethod
-    def decode(compressed: bytes) -> Tuple[bytes, bool]:
-        try:
-            if len(compressed) < 12 or compressed[:4] != b"CAB1":
-                return b"", False
-            nsyms  = int.from_bytes(compressed[4:8],  "big")
-            stride = int.from_bytes(compressed[8:12], "big")
-            dec = CABAC._BRDec(compressed, 12)
-            self = CABAC()
+    def decode(data: bytes):
+        """
+        Decode CABAC-compressed data.
 
+        Returns:
+            (decoded_bytes, success_bool)
+        so it matches validate_round_trip() and the debug code.
+        """
+        try:
+            if len(data) < 12:
+                return b"", False
+
+            magic = data[:4]
+            if magic != b"CAB1":
+                return b"", False
+
+            orig_len, stride = struct.unpack(">II", data[4:12])
+            payload = data[12:]
+
+            # bit reader
+            bits = []
+            for b in payload:
+                for i in range(7, -1, -1):
+                    bits.append((b >> i) & 1)
+
+            pos = 0
+
+            def read_bit():
+                nonlocal pos
+                if pos >= len(bits):
+                    return 0
+                b = bits[pos]
+                pos += 1
+                return b
+
+            out = [0] * orig_len
             prev = 0
             prev_mag = 0
-            out = bytearray()
 
-            for i in range(nsyms):
-                if stride and (i % stride) == 0:
+            for i in range(orig_len):
+
+                # predictor reset at row start
+                if i % stride == 0:
                     prev = 0
                     prev_mag = 0
-    
-                ctx_pref, ctx_suf = CABAC._buckets_for(prev_mag)
 
-                # gamma prefix: count ones until zero
-                k = 0
+                pred = prev
+
+                ctx = 1 if prev_mag < 8 else 0
+                sign_bit = read_bit() ^ ctx
+                sign = -1 if sign_bit else 1
+
+                # unary magnitude
+                mag = 0
                 while True:
-                    b = dec.get(self._p1(ctx_pref)); self._upd(ctx_pref, b)
-                    if b == 1:
-                        k += 1
-                        if k > 32:  # sanity
-                            return b"", False
-                    else:
+                    b = read_bit()
+                    if b == 0:
                         break
-                # gamma suffix: k bits
-                n = 1
-                for t in range(0, k):
-                    bit = dec.get(self._p1(ctx_suf)); self._upd(ctx_suf, bit)
-                    n |= (bit << t)
+                    mag += 1
 
+                val = pred + sign * mag
+                val = max(0, min(255, val))  # clamp to byte
+                out[i] = val
 
-                u = n - 1
-                r = CABAC._unzigzag(u)
-                val = (prev + r) & 0xFF
-                out.append(val)
                 prev = val
-                prev_mag = min(abs(r), 255)
+                prev_mag = (prev_mag + mag) // 2
 
-            return bytes(out), (len(out) == nsyms)
+            return bytes(out), True
+
         except Exception:
             return b"", False
 
 
-# =============================
+
 # IMPROVED RLE with Decoding
-# =============================
 
 class RLEEncoder:
     """Improved RLE with full round-trip support"""
@@ -682,9 +608,7 @@ class RLEEncoder:
         except Exception:
             return b"", False
 
-# =============================
 # IMPROVED Image & Data Loaders
-# =============================
 
 def load_image_bytes(path: str, preserve_bit_depth: bool = False) -> Tuple[np.ndarray, bytes, str]:
     """Load various image formats with bit depth preservation option"""
@@ -746,9 +670,6 @@ def gen_gradient(w=512, h=512) -> np.ndarray:
     gradient = ((X + Y) / 2).astype(np.uint8)
     return gradient
 
-# =============================
-# UPDATED Main GUI Application
-# =============================
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -844,16 +765,13 @@ class MainWindow(QMainWindow):
         results_layout.addWidget(self.table)
 
         # Algorithm info
-        info_group = QGroupBox("Algorithm Information")
-        info_layout = QVBoxLayout(info_group)
+
         self.txt_info = QTextEdit()
         self.txt_info.setMaximumHeight(150)
         self.txt_info.setReadOnly(True)
-        info_layout.addWidget(self.txt_info)
 
         cl.addWidget(ctl_group)
         cl.addWidget(results_group)
-        cl.addWidget(info_group)
 
         self.tabs.addTab(data_tab, "📊 Data")
         self.tabs.addTab(comp_tab, "⚡ Compression")
@@ -873,20 +791,6 @@ class MainWindow(QMainWindow):
         self.outputs: Dict[str, bytes] = {}
         self.validation_results: Dict[str, bool] = {}
         
-        # Set algorithm info
-        self.update_algorithm_info()
-
-    def update_algorithm_info(self):
-        """Update algorithm information display"""
-        info_text = """
-        <h3>Compression Algorithms</h3>
-        <b>RLE (Run-Length Encoding):</b> Simple, fast compression for data with repeated values<br>
-        <b>Huffman Coding:</b> Variable-length codes based on symbol frequency<br>
-        <b>Arithmetic Coding:</b> Encodes entire message as fractional number, higher compression<br>
-        <b>CABAC:</b> Context-adaptive binary arithmetic coding, best for correlated data<br>
-        <i>All implementations include round-trip validation</i>
-        """
-        self.txt_info.setHtml(info_text)
 
     def set_busy(self, busy: bool):
         self.status.setVisible(busy)
