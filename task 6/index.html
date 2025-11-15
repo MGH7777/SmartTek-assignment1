@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Multi Lossless Coding Pipeline – Huffman + CABAC + RLE</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+    <h1>Multi Lossless Coding Pipeline</h1>
+    <p>Huffman Coding &middot; Simplified CABAC &middot; Run-Length Encoding (RLE)</p>
+</header>
+
+<nav>
+    <a href="#task">Task Description</a>
+    <a href="#overview">System Overview</a>
+    <a href="#algorithms">Algorithms</a>
+    <a href="#implementation">Implementation Details</a>
+    <a href="#performance">Performance & Benchmarks</a>
+    <a href="#usage">How to Run</a>
+    <a href="#code">Code & Files</a>
+    <a href="#conclusion">Conclusion</a>
+</nav>
+
+<main>
+    <!-- TASK DESCRIPTION -->
+    <section id="task">
+        <h2>1. Task Description</h2>
+        <p>
+            This project implements a <strong>multi-stage lossless image compression pipeline</strong> using:
+        </p>
+        <ul>
+            <li><strong>Huffman Coding</strong> for entropy coding of symbol sequences.</li>
+            <li>A <strong>simplified CABAC</strong>-like binary arithmetic coder for compressing bitstreams.</li>
+            <li><strong>Run-Length Encoding (RLE)</strong> as a baseline for comparison.</li>
+        </ul>
+        <p>The assignment requirements were:</p>
+        <ol>
+            <li>Implement Huffman Coding from an empirical frequency table derived from data/image data.</li>
+            <li>Visualize the Huffman tree and the generated codebook.</li>
+            <li>Encode image data using the Huffman implementation.</li>
+            <li>Implement a simplified CABAC that compresses binary data and apply it to the Huffman-encoded image data.</li>
+            <li>Integrate Huffman and CABAC into a single compression tool.</li>
+            <li>Compare compression ratio and speed against a simple RLE implementation.</li>
+            <li>Explain design decisions, algorithms and optimizations, and present the solution as a video or website.</li>
+        </ol>
+        <p>
+            This website presents my solution, explains the algorithms and design choices,
+            and shows performance results and example visualizations.
+        </p>
+    </section>
+
+    <!-- SYSTEM OVERVIEW -->
+    <section id="overview">
+        <h2>2. System Overview</h2>
+        <p>
+            The solution is implemented as a <strong>Python console application</strong> with a modular design.
+            The core components are:
+        </p>
+        <ul>
+            <li><strong>HuffmanCoding</strong> – builds frequency tables, Huffman trees, and codebooks, and encodes/decodes data.</li>
+            <li><strong>WorkingCABAC</strong> – simplified CABAC-style binary arithmetic coder for bitstrings.</li>
+            <li><strong>RLEEncoder</strong> – classic run-length encoding for comparison.</li>
+            <li><strong>MultiLosslessCodingPipeline</strong> – orchestrates loading data, running Huffman/RLE/CABAC and collecting statistics.</li>
+        </ul>
+        <p>The typical pipeline for image data is:</p>
+        <ol>
+            <li>Load an image and convert it to grayscale bytes.</li>
+            <li>Build a frequency table and Huffman tree from the pixel values.</li>
+            <li>Encode the image using Huffman (producing a bitstring).</li>
+            <li>Apply simplified CABAC to the Huffman bitstring.</li>
+            <li>Record compression ratio, space saving, and runtime.</li>
+        </ol>
+
+        <figure class="diagram">
+            <!-- Optional: pipeline diagram if you create one -->
+            <!-- <img src="pipeline_diagram.png" alt="Compression pipeline diagram"> -->
+            <figcaption>
+                <em>High-level pipeline from raw image bytes to Huffman + CABAC compressed data.
+                (Optional diagram – not required for the assignment.)</em>
+            </figcaption>
+        </figure>
+    </section>
+
+    <!-- ALGORITHMS -->
+    <section id="algorithms">
+        <h2>3. Algorithms</h2>
+
+        <article>
+            <h3>3.1 Huffman Coding</h3>
+            <p>
+                Huffman Coding is an <strong>entropy coding</strong> algorithm that assigns shorter bit codes
+                to more frequent symbols and longer codes to less frequent ones. It guarantees an optimal
+                prefix-free code for a known frequency distribution.
+            </p>
+            <h4>Steps in my implementation</h4>
+            <ol>
+                <li>Compute a <strong>frequency table</strong> using <code>collections.Counter</code> over the input bytes.</li>
+                <li>Build a <strong>priority queue</strong> (min-heap) of leaf nodes (symbol, frequency).</li>
+                <li>Repeatedly merge the two lowest-frequency nodes into a new node until one root remains.</li>
+                <li>Traverse the tree:
+                    <ul>
+                        <li>Left edge = append "0"</li>
+                        <li>Right edge = append "1"</li>
+                    </ul>
+                    This generates a <strong>prefix-free codebook</strong> mapping symbols to bitstrings.
+                </li>
+                <li>Encode the data by replacing each symbol with its bitstring.</li>
+            </ol>
+
+            <h4>Visualization</h4>
+            <p>
+                The application produces two kinds of visualizations using Matplotlib:
+            </p>
+            <ul>
+                <li><strong>Huffman tree plot</strong> – nodes with frequencies, edges, and a layout showing the tree structure.</li>
+                <li><strong>Codebook plot</strong> – bar chart of code lengths per symbol, annotated with the corresponding bit codes.</li>
+            </ul>
+
+            <figure class="diagram">
+                <img src="huffman_tree.png" alt="Huffman tree visualization">
+                <figcaption>
+                    Example Huffman tree for one of the test images. More frequent symbols appear closer
+                    to the root and therefore receive shorter codes.
+                </figcaption>
+            </figure>
+
+            <figure class="diagram">
+                <img src="huffman_codebook.png" alt="Huffman codebook visualization">
+                <figcaption>
+                    Example Huffman codebook visualization: each bar shows the code length of a symbol,
+                    with the actual bit pattern printed on top.
+                </figcaption>
+            </figure>
+        </article>
+
+        <article>
+            <h3>3.2 Simplified CABAC (Binary Arithmetic Coding)</h3>
+            <p>
+                CABAC (Context-Adaptive Binary Arithmetic Coding) is a powerful entropy coder used in video
+                codecs like H.264/AVC. For this assignment, I implemented a <strong>simplified</strong>, non-context-adaptive
+                variant for <strong>binary data</strong> (bitstrings).
+            </p>
+            <p>Key simplifications in my version:</p>
+            <ul>
+                <li>Single global probability model (e.g. <code>P(1) = 0.5</code>) rather than context modeling.</li>
+                <li>No adaptation of probabilities over time.</li>
+                <li>Standard interval subdivision arithmetic coding for 0/1.</li>
+            </ul>
+
+            <h4>Encoding process</h4>
+            <ol>
+                <li>Represent the current range as [<code>low</code>, <code>high</code>).</li>
+                <li>For each bit:
+                    <ul>
+                        <li>Split the range into two subranges for 0 and 1 based on the probability.</li>
+                        <li>Select the subrange corresponding to the actual bit.</li>
+                    </ul>
+                </li>
+                <li>At the end, output a value inside the final range as the compressed representation.</li>
+            </ol>
+            <p>
+                The implementation includes both <strong>encode</strong> and <strong>decode</strong> functions and can verify that
+                the original bitstring is recovered.
+            </p>
+        </article>
+
+        <article>
+            <h3>3.3 Run-Length Encoding (RLE)</h3>
+            <p>
+                RLE is used as a <strong>baseline</strong> for comparison. It compresses sequences of repeated bytes by replacing
+                them with (value, run-length) pairs.
+            </p>
+            <p>My implementation:</p>
+            <ul>
+                <li>Traverses the data once, counting consecutive equal symbols.</li>
+                <li>Stores encoded output as simple (value, count) pairs.</li>
+                <li>Includes a matching decoder to reconstruct the original data.</li>
+            </ul>
+            <p>
+                RLE works well on data with long runs (e.g. flat areas in an image), but often performs poorly
+                on natural images compared to Huffman/CABAC.
+            </p>
+        </article>
+    </section>
+
+    <!-- IMPLEMENTATION DETAILS -->
+    <section id="implementation">
+        <h2>4. Implementation Details & Design Decisions</h2>
+
+        <h3>4.1 Language and Libraries</h3>
+        <ul>
+            <li><strong>Language:</strong> Python</li>
+            <li><strong>Libraries:</strong>
+                <ul>
+                    <li><code>Pillow</code> – loading and converting images to grayscale byte arrays.</li>
+                    <li><code>matplotlib</code> – visualizing Huffman trees, codebooks, and performance results.</li>
+                    <li><code>collections.Counter</code> – building frequency tables.</li>
+                    <li><code>heapq</code> – priority queue for building Huffman trees.</li>
+                    <li><code>time</code> – basic runtime measurements.</li>
+                </ul>
+            </li>
+        </ul>
+
+        <h3>4.2 Data Flow</h3>
+        <ol>
+            <li><strong>Image loading:</strong> images are loaded in grayscale mode, producing a flat list of pixel values (0–255).</li>
+            <li><strong>Huffman:</strong> the frequency table is computed from pixel values; Huffman then produces a bitstring.</li>
+            <li><strong>CABAC:</strong> the Huffman bitstring is fed into the simplified CABAC coder, which outputs a more compact representation.</li>
+            <li><strong>RLE:</strong> operates directly on the original bytes for baseline comparison.</li>
+        </ol>
+
+        <h3>4.3 Design Choices</h3>
+        <ul>
+            <li>
+                <strong>Modular structure:</strong> Huffman, CABAC, RLE, and pipeline logic are separated into classes.
+                This makes it easy to test and compare each part independently.
+            </li>
+            <li>
+                <strong>CLI menu interface:</strong> the program uses a text-based menu for:
+                <ul>
+                    <li>Choosing input (image file, arbitrary binary file, or sample data).</li>
+                    <li>Running the full Huffman + CABAC pipeline.</li>
+                    <li>Running RLE, Huffman, or CABAC alone.</li>
+                    <li>Displaying visualizations.</li>
+                </ul>
+            </li>
+            <li>
+                <strong>Simplified CABAC:</strong> probability model kept deliberately simple to focus on the
+                basic principle of arithmetic coding rather than full context modeling.
+            </li>
+        </ul>
+    </section>
+
+    <!-- PERFORMANCE -->
+    <section id="performance">
+        <h2>5. Performance & Benchmarks</h2>
+        <p>
+            The program automatically records and prints the following metrics for each method:
+        </p>
+        <ul>
+            <li>Original size (bytes)</li>
+            <li>Encoded size (bytes)</li>
+            <li>Compression ratio (original / encoded)</li>
+            <li>Space saving (%)</li>
+            <li>Runtime (seconds)</li>
+        </ul>
+
+        <h3>5.1 Comparison Methods</h3>
+        <p>The following methods are compared:</p>
+        <ul>
+            <li><strong>RLE only</strong> on original data</li>
+            <li><strong>Huffman only</strong> on original data</li>
+            <li><strong>CABAC only</strong> on original data (bitstring form)</li>
+            <li><strong>Full pipeline:</strong> Huffman → CABAC on original data</li>
+        </ul>
+
+        <h3>5.2 Experimental Results on Test Images</h3>
+        <p>
+            I evaluated the compressor on four different grayscale images that represent
+            different types of content: a natural landscape, a forest with lots of fine detail,
+            a cartoon-style city, and a binary black/white marker. The tables below show
+            the measured compression ratio (original / encoded), space saving, and runtime
+            for each method.
+        </p>
+
+        <h4>5.2.1 Natural landscape (3000 × 2000)</h4>
+        <p><em>File: landscape.png</em></p>
+
+        <figure class="diagram">
+            <img src="landscape.png" alt="Mountain lake landscape">
+            <figcaption>
+                Natural landscape with water, mountains and sky. This image has rich textures and
+                smooth gradients, which makes it a good test case for general image compression.
+            </figcaption>
+        </figure>
+
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Method</th>
+                    <th>Original (bytes)</th>
+                    <th>Encoded (bytes)</th>
+                    <th>Ratio</th>
+                    <th>Space Saving</th>
+                    <th>Time (s)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>RLE</td>
+                    <td>6,000,000</td>
+                    <td>8,978,362</td>
+                    <td>0.67 : 1</td>
+                    <td>−49.6 %</td>
+                    <td>1.0512</td>
+                </tr>
+                <tr>
+                    <td>Huffman</td>
+                    <td>6,000,000</td>
+                    <td>5,798,557</td>
+                    <td>1.03 : 1</td>
+                    <td>3.4 %</td>
+                    <td>1.1288</td>
+                </tr>
+                <tr>
+                    <td>CABAC (raw)</td>
+                    <td>6,000,000</td>
+                    <td>6,000,001</td>
+                    <td>1.00 : 1</td>
+                    <td>−0.0 %</td>
+                    <td>106.8901</td>
+                </tr>
+                <tr>
+                    <td>Huffman → CABAC</td>
+                    <td>6,000,000</td>
+                    <td>5,798,557</td>
+                    <td>1.03 : 1</td>
+                    <td>3.4 %</td>
+                    <td>75.9387</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h4>5.2.2 Forest path (612 × 408)</h4>
+        <p><em>File: forrest.png</em></p>
+
+        <figure class="diagram">
+            <img src="forrest.png" alt="Forest path with dense vegetation">
+            <figcaption>
+                Forest scene with a narrow path and dense vegetation. This image contains a lot of fine,
+                high-frequency detail, which is typically hard to compress efficiently.
+            </figcaption>
+        </figure>
+
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Method</th>
+                    <th>Original (bytes)</th>
+                    <th>Encoded (bytes)</th>
+                    <th>Ratio</th>
+                    <th>Space Saving</th>
+                    <th>Time (s)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>RLE</td>
+                    <td>249,696</td>
+                    <td>475,760</td>
+                    <td>0.52 : 1</td>
+                    <td>−90.5 %</td>
+                    <td>0.0621</td>
+                </tr>
+                <tr>
+                    <td>Huffman</td>
+                    <td>249,696</td>
+                    <td>216,493</td>
+                    <td>1.15 : 1</td>
+                    <td>13.3 %</td>
+                    <td>0.0421</td>
+                </tr>
+                <tr>
+                    <td>CABAC (raw)</td>
+                    <td>249,696</td>
+                    <td>249,697</td>
+                    <td>1.00 : 1</td>
+                    <td>−0.0 %</td>
+                    <td>3.3306</td>
+                </tr>
+                <tr>
+                    <td>Huffman → CABAC</td>
+                    <td>249,696</td>
+                    <td>216,493</td>
+                    <td>1.15 : 1</td>
+                    <td>13.3 %</td>
+                    <td>7.7330</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h4>5.2.3 Cartoon city (800 × 600)</h4>
+        <p><em>File: cover_test.png</em></p>
+
+        <figure class="diagram">
+            <img src="cover_test.png" alt="Cartoon city with buildings and road">
+            <figcaption>
+                Cartoon-style cityscape with flat color regions and simple shapes. This is a more
+                synthetic image with lower visual entropy, which should give better compression
+                than natural photos.
+            </figcaption>
+        </figure>
+
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Method</th>
+                    <th>Original (bytes)</th>
+                    <th>Encoded (bytes)</th>
+                    <th>Ratio</th>
+                    <th>Space Saving</th>
+                    <th>Time (s)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>RLE</td>
+                    <td>480,000</td>
+                    <td>828,166</td>
+                    <td>0.58 : 1</td>
+                    <td>−72.5 %</td>
+                    <td>0.1560</td>
+                </tr>
+                <tr>
+                    <td>Huffman</td>
+                    <td>480,000</td>
+                    <td>332,814</td>
+                    <td>1.44 : 1</td>
+                    <td>30.7 %</td>
+                    <td>0.1106</td>
+                </tr>
+                <tr>
+                    <td>CABAC (raw)</td>
+                    <td>480,000</td>
+                    <td>480,001</td>
+                    <td>1.00 : 1</td>
+                    <td>−0.0 %</td>
+                    <td>5.5541</td>
+                </tr>
+                <tr>
+                    <td>Huffman → CABAC</td>
+                    <td>480,000</td>
+                    <td>332,814</td>
+                    <td>1.44 : 1</td>
+                    <td>30.7 %</td>
+                    <td>4.4103</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h4>5.2.4 Binary marker (128 × 128)</h4>
+        <p><em>File: payload_test.png</em></p>
+
+        <figure class="diagram">
+            <img src="payload_test.png" alt="Binary marker image with black and white regions">
+            <figcaption>
+                Binary marker consisting mainly of black and white pixels. This image has many long
+                runs of identical values and is a perfect match for RLE-style compression.
+            </figcaption>
+        </figure>
+
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Method</th>
+                    <th>Original (bytes)</th>
+                    <th>Encoded (bytes)</th>
+                    <th>Ratio</th>
+                    <th>Space Saving</th>
+                    <th>Time (s)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>RLE</td>
+                    <td>16,384</td>
+                    <td>2,244</td>
+                    <td>7.30 : 1</td>
+                    <td>86.3 %</td>
+                    <td>0.0051</td>
+                </tr>
+                <tr>
+                    <td>Huffman</td>
+                    <td>16,384</td>
+                    <td>2,584</td>
+                    <td>6.34 : 1</td>
+                    <td>84.2 %</td>
+                    <td>0.0081</td>
+                </tr>
+                <tr>
+                    <td>CABAC (raw)</td>
+                    <td>16,384</td>
+                    <td>16,385</td>
+                    <td>1.00 : 1</td>
+                    <td>−0.0 %</td>
+                    <td>0.2022</td>
+                </tr>
+                <tr>
+                    <td>Huffman → CABAC</td>
+                    <td>16,384</td>
+                    <td>2,584</td>
+                    <td>6.34 : 1</td>
+                    <td>84.2 %</td>
+                    <td>0.0397</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>5.3 Visualizations</h3>
+        <p>
+            The Python program also generates performance plots using Matplotlib, e.g. bar charts
+            for compression ratio, space saving and runtime, and a combined radar chart for a
+            quick visual comparison.
+        </p>
+
+        <figure class="diagram">
+            <img src="performance_plot.png" alt="Performance comparison plots">
+            <figcaption>
+                Example performance visualization combining compression ratio, space saving and
+                runtime for all methods. (Screenshot exported from the Matplotlib window.)
+            </figcaption>
+        </figure>
+
+        <h3>5.4 Analysis</h3>
+        <p>
+            The experiments confirm the expected behaviour of the different compression methods:
+        </p>
+        <ul>
+            <li>
+                <strong>RLE</strong> performs very poorly on natural and detailed images
+                (landscape, forest, cartoon city), where it even increases the file size by
+                50–90 %. However, on the binary marker it achieves the <em>best</em> compression
+                overall (7.30 : 1), thanks to very long runs of identical pixels.
+            </li>
+            <li>
+                <strong>Huffman Coding</strong> is robust across all images and consistently
+                achieves positive compression gains. On natural photos the gain is modest
+                (about 3–13 %), but on simpler images like the cartoon city it reaches
+                about 30 % space saving.
+            </li>
+            <li>
+                The simplified <strong>CABAC</strong> implementation with a fixed probability
+                model does not improve compression. The encoded size stays essentially equal
+                to the input size and the runtime is significantly higher, especially for the
+                large landscape image. This shows that a non-adaptive arithmetic coder with an
+                unsuitable probability model cannot outperform an already entropy-coded stream.
+            </li>
+            <li>
+                The combined <strong>Huffman → CABAC pipeline</strong> ends up with the same
+                size as the pure Huffman output but with higher runtime. This underlines that
+                once Huffman has already produced a near-optimal bitstream, an additional
+                coding stage needs a much more advanced, context-adaptive model to provide
+                further gains.
+            </li>
+        </ul>
+        <p>
+            Overall, the results nicely illustrate the trade-offs between a very simple but
+            sometimes effective method (RLE), a general-purpose entropy coder (Huffman),
+            and a more complex but here oversimplified arithmetic coder (CABAC).
+        </p>
+    </section>
+
+    <!-- HOW TO RUN -->
+    <section id="usage">
+        <h2>6. How to Run the Program</h2>
+        <ol>
+            <li>Install dependencies:
+                <pre><code>pip install pillow matplotlib numpy</code></pre>
+            </li>
+            <li>Run the main script:
+                <pre><code>python app6.py</code></pre>
+            </li>
+            <li>Use the menu to:
+                <ul>
+                    <li>Load an image file (for Huffman + CABAC pipeline).</li>
+                    <li>Load an arbitrary binary file.</li>
+                    <li>Use sample data for testing.</li>
+                    <li>Run:
+                        <ul>
+                            <li>Full Huffman + CABAC pipeline</li>
+                            <li>RLE only / Huffman only / CABAC only</li>
+                            <li>Visualize Huffman tree and codebook</li>
+                            <li>Visualize performance comparisons</li>
+                        </ul>
+                    </li>
+                </ul>
+            </li>
+        </ol>
+    </section>
+
+
+    <!-- CODE & FILES -->
+    <section id="code">
+        <h2>7. Code & Files</h2>
+        <p>
+            The main implementation is contained in the file <code>app6.py</code>, which defines:
+        </p>
+        <ul>
+            <li><code>HuffmanCoding</code></li>
+            <li><code>WorkingCABAC</code></li>
+            <li><code>RLEEncoder</code></li>
+            <li><code>MultiLosslessCodingPipeline</code></li>
+            <li><code>main()</code> – entry point with a text menu</li>
+        </ul>
+        <p>
+            The code can be provided as:
+        </p>
+        <ul>
+            <li>A Git repository (e.g. GitHub)</li>
+            <li>A ZIP file with source code and example images</li>
+        </ul>
+        <p>
+            <a href="multi_lossless_coding_pipeline.zip" class="button" download>
+                Download Source Code
+            </a>
+
+        </p>
+    </section>
+
+    <!-- CONCLUSION -->
+    <section id="conclusion">
+        <h2>8. Conclusion</h2>
+        <p>
+            This project demonstrates a complete <strong>lossless image compression pipeline</strong> that combines
+            Huffman Coding and a simplified CABAC coder, with RLE as a baseline. The implementation includes
+            visualizations of the Huffman structures and detailed performance benchmarks for compression ratio,
+            space saving, and runtime.
+        </p>
+        <p>
+            All assignment requirements are covered:
+        </p>
+        <ul>
+            <li>Huffman implementation with tree and codebook visualization.</li>
+            <li>Simplified CABAC for binary data, applied to Huffman-encoded images.</li>
+            <li>Integrated tool with RLE comparison.</li>
+            <li>Performance benchmarks and explanation of design decisions.</li>
+            <li>This website serves as the required presentation of the solution.</li>
+        </ul>
+    </section>
+</main>
+
+<footer>
+    <p>&copy; 2025 – Multi Lossless Coding Pipeline</p>
+</footer>
+</body>
+</html>

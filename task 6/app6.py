@@ -179,13 +179,11 @@ class HuffmanCoding:
         plt.show()
 
 class WorkingCABAC:
-    """Simplified but reliable CABAC implementation"""
     
     def __init__(self):
         self.prob_one = 0.5  
     
     def encode_binary_data(self, bitstring):
-        """Simple reliable CABAC encoder"""
         if not bitstring:
             return b""
             
@@ -592,7 +590,6 @@ class MultiLosslessCodingPipeline:
         return results
 
     def visualize_performance_comparison(self):
-        """Visualize performance comparison - MISSING COMPONENT 3"""
         if not self.comparison_results:
             print("No comparison results to visualize")
             return
@@ -815,7 +812,6 @@ def main():
                 print("\nRLE ENCODING RESULTS:")
                 pipeline._print_stats(stats)
         
-        # Ask to continue
         print("\n" + "="*70)
         continue_choice = input("Would you like to try another file? (y/n) [y]: ").strip().lower() or "y"
         if continue_choice not in ['y', 'yes']:
